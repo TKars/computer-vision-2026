@@ -95,10 +95,10 @@ def predict(model, loader, flip=False):
 
 
 def fit(model, train_loader, val_loader, output, name, seconds, epochs, lr,
-        history, best_accuracy=0.0):
+        history, best_accuracy=0.0, mixup=False, weight_decay=1e-4):
     checkpoint = output / f'{name}.pth'
     torch.save(model.state_dict(), checkpoint)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, eta_min=1e-5)
     scaler = torch.amp.GradScaler('cuda')
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
@@ -112,10 +112,17 @@ def fit(model, train_loader, val_loader, output, name, seconds, epochs, lr,
         for step, (images, labels) in enumerate(train_loader, 1):
             images = prepare(images, augment=True)
             labels = labels.cuda(non_blocking=True)
+            if mixup:
+                ratio = float(np.random.beta(0.2, 0.2))
+                ratio = max(ratio, 1 - ratio)
+                order = torch.randperm(len(images), device='cuda')
+                images = ratio * images + (1 - ratio) * images[order]
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda'):
                 logits = model(images)
                 loss = criterion(logits, labels)
+                if mixup:
+                    loss = ratio * loss + (1 - ratio) * criterion(logits, labels[order])
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
