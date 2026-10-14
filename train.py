@@ -140,6 +140,10 @@ def fit(model, train_loader, val_loader, output, name, seconds, epochs, lr,
         history.append(row)
         pd.DataFrame(history).to_csv(output / 'history.csv', index=False)
         print(f'{name} epoch={epoch} accuracy={score:.5f} seconds={row["seconds"]:.1f}', flush=True)
+        if mixup:
+            torch.save(model.state_dict(), output / f'{name}_last.pth')
+            if epoch % 10 == 0:
+                torch.save(model.state_dict(), output / f'{name}_epoch{epoch}.pth')
         if score > best_accuracy:
             best_accuracy = score
             torch.save(model.state_dict(), checkpoint)

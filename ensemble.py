@@ -39,15 +39,19 @@ def run(folders, output):
                                 batch_size=512, pin_memory=True, num_workers=4,
                                 persistent_workers=True)
                for split in ('val', 'test')}
-    specs = []
+    specs, original_recipes = [], []
     for folder in map(Path, folders):
         summary = json.loads((folder / 'summary.json').read_text())
+        recipe = []
         for item in summary['models']:
             spec = {key: item[key] for key in ('stem', 'checkpoint')}
             spec['folder'] = item.get('folder', folder.name)
             spec['flip'] = item.get('flip', summary.get('flip_tta', False))
             if spec not in specs:
                 specs.append(spec)
+            recipe.append({**spec, 'weight': item.get('weight', 1 / len(summary['models'])),
+                           'temperature': item.get('temperature', 1)})
+        original_recipes.append(recipe)
         if (folder / 'model.pth').exists():
             config = json.loads((folder / 'config.json').read_text())
             spec = {'stem': config['stem'], 'checkpoint': 'model.pth',
@@ -69,6 +73,13 @@ def run(folders, output):
         recipes.append(recipe)
     for index, probs in enumerate(probabilities):
         add(f'model_{index}', probs, [{**specs[index], 'weight': 1.0, 'temperature': 1}])
+    for index, recipe in enumerate(original_recipes):
+        combined = None
+        for item in recipe:
+            spec = {key: item[key] for key in ('stem', 'checkpoint', 'folder', 'flip')}
+            probs = temper(probabilities[specs.index(spec)], item['temperature']) * item['weight']
+            combined = probs if combined is None else combined + probs
+        add(f'original_run_{index}', combined, recipe)
     transformed = {(index, temperature): temper(probs, temperature)
                    for index, probs in enumerate(probabilities) for temperature in (1, 2)}
     for first, second in itertools.combinations(range(len(specs)), 2):
@@ -78,6 +89,13 @@ def run(folders, output):
                 add(f'{first}_{second}_t{t1}_{t2}_w{ratio}', probs,
                     [{**specs[first], 'weight': ratio, 'temperature': t1},
                      {**specs[second], 'weight': 1 - ratio, 'temperature': t2}])
+    for count in range(3, len(specs) + 1):
+        for indices in itertools.combinations(range(len(specs)), count):
+            for temperature in (1, 2):
+                probs = sum(transformed[index, temperature] for index in indices) / count
+                add(f'mean_{indices}_t{temperature}', probs,
+                    [{**specs[index], 'weight': 1 / count, 'temperature': temperature}
+                     for index in indices])
     table = pd.DataFrame(scores)
     table.to_csv(output / 'scores.csv', index=False)
     selected = int(table['accuracy'].idxmax())

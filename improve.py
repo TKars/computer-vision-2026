@@ -54,25 +54,37 @@ def run(parent, output, minutes=60, kind='resize56'):
     set_seed(43)
     fit(model, loaders['train'], loaders['val'], output, 'model', max(0, minutes - 8) * 60,
         60, lr, [], best_accuracy=initial_accuracy, mixup=True, weight_decay=0.01)
-    before = accuracy(model, loaders['val'])
-    original = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
-    for layer in model.modules():
-        if isinstance(layer, nn.BatchNorm2d):
-            layer.reset_running_stats()
-            layer.momentum = None
-    set_seed(43)
-    model.train()
-    with torch.inference_mode():
-        for step, (images, _) in enumerate(loaders['train']):
-            model(prepare(images))
-            if step == 99:
-                break
-    after = accuracy(model, loaders['val'])
-    calibrated = after > before
-    if not calibrated:
-        model.load_state_dict(original)
+    candidates = [output / 'model.pth', output / 'model_last.pth'] + sorted(output.glob('model_epoch*.pth'))
+    calibration, best_record = [], None
+    for checkpoint in candidates:
+        model.load_state_dict(torch.load(checkpoint, map_location='cpu', weights_only=True))
+        before = accuracy(model, loaders['val'])
+        original = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+        for layer in model.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.reset_running_stats()
+                layer.momentum = None
+        set_seed(43)
+        model.train()
+        with torch.inference_mode():
+            for step, (images, _) in enumerate(loaders['train']):
+                model(prepare(images))
+                if step == 99:
+                    break
+        after = accuracy(model, loaders['val'])
+        record = {'checkpoint': checkpoint.name, 'before': before, 'after': after, 'used': after > before}
+        calibration.append(record)
+        if after <= before:
+            model.load_state_dict(original)
+        if best_record is None or max(before, after) > max(best_record['before'], best_record['after']):
+            best_record = record
+            torch.save(model.state_dict(), output / 'selected.pth')
+        print(json.dumps(record), flush=True)
+        del original
+    pd.DataFrame(calibration).to_csv(output / 'calibration.csv', index=False)
+    model.load_state_dict(torch.load(output / 'selected.pth', map_location='cpu', weights_only=True))
     torch.save(model.state_dict(), output / 'model.pth')
-    del original
+    (output / 'selected.pth').unlink()
     labels = arrays['val_labels']
     plain = predict(model, loaders['val'])
     flipped = predict(model, loaders['val'], flip=True)
@@ -119,7 +131,7 @@ def run(parent, output, minutes=60, kind='resize56'):
     submission.to_csv(output / 'submission.csv', index=False)
     summary = {'selected': selected, 'models': specs, 'baseline_accuracy': baseline_score,
                'delta_baseline': selected['accuracy'] - baseline_score,
-               'bn_calibration': {'before': before, 'after': after, 'used': calibrated},
+               'bn_calibration': best_record,
                'val_above_6_threshold': selected['accuracy'] > 0.76102,
                'val_above_8_threshold': selected['accuracy'] > 0.77489}
     (output / 'summary.json').write_text(json.dumps(summary, indent=2))

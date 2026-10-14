@@ -16,10 +16,10 @@ def pack(best, archive):
                                     'quick_draw.ipynb', 'results.ipynb']]
     files.append(Path('input/baseline.pth'))
     folders = [Path('output') / name for name in ['run-20261014', 'resize56-20261014',
-                                               'regularized-20261014', 'ensemble-20261014']]
+                                               'regularized-20261014', 'regularized-fixed-20261014', 'ensemble-20261014']]
     names = {'config.json', 'summary.json', 'verification.json', 'history.csv', 'scores.csv',
              'submission.csv', 'train.log', 'environment.txt', 'source.py', 'train_source.py',
-             'resnet18_3.pth', 'resnet18_7.pth', 'finetuned.pth', 'model.pth'}
+             'resnet18_3.pth', 'resnet18_7.pth', 'finetuned.pth', 'model.pth', 'calibration.csv'}
     for folder in folders:
         if (folder / 'summary.json').exists():
             files.extend(p for p in folder.iterdir() if p.name in names)
