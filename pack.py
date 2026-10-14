@@ -14,12 +14,17 @@ def pack(best, archive):
     files = [Path(name) for name in ['train.py', 'improve.py', 'ensemble.py', 'verify.py',
                                     'pack.py', 'requirements.txt', 'README.md',
                                     'quick_draw.ipynb', 'results.ipynb']]
+    if best.name.startswith('vit-'):
+        files.extend([Path('vit.py'), Path('vit_results.ipynb')])
     files.append(Path('input/baseline.pth'))
     folders = [Path('output') / name for name in ['run-20261014', 'resize56-20261014',
                                                'regularized-20261014', 'regularized-fixed-20261014', 'ensemble-20261014']]
+    if best not in folders:
+        folders.append(best)
     names = {'config.json', 'summary.json', 'verification.json', 'history.csv', 'scores.csv',
              'submission.csv', 'train.log', 'environment.txt', 'source.py', 'train_source.py',
-             'resnet18_3.pth', 'resnet18_7.pth', 'finetuned.pth', 'model.pth', 'calibration.csv'}
+             'resnet18_3.pth', 'resnet18_7.pth', 'finetuned.pth', 'model.pth', 'calibration.csv',
+             'vit.pth', 'best.json'}
     for folder in folders:
         if (folder / 'summary.json').exists():
             files.extend(p for p in folder.iterdir() if p.name in names)
