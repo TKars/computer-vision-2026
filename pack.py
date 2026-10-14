@@ -15,7 +15,7 @@ def pack(best, archive):
                                     'pack.py', 'requirements.txt', 'README.md',
                                     'quick_draw.ipynb', 'results.ipynb']]
     if best.name.startswith('vit-'):
-        files.extend([Path('vit.py'), Path('vit_tta.py'), Path('vit_results.ipynb')])
+        files.extend([Path('vit.py'), Path('vit_tta.py'), Path('class_errors.py'), Path('vit_results.ipynb')])
     files.append(Path('input/baseline.pth'))
     folders = [Path('output') / name for name in ['run-20261014', 'resize56-20261014',
                                                'regularized-20261014', 'regularized-fixed-20261014', 'ensemble-20261014']]
