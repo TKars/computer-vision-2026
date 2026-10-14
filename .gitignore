@@ -1,0 +1,9 @@
+input/
+output/
+*.zip
+*.pth
+*.npy
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
