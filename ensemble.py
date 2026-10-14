@@ -81,9 +81,9 @@ def run(folders, output):
             combined = probs if combined is None else combined + probs
         add(f'original_run_{index}', combined, recipe)
     transformed = {(index, temperature): temper(probs, temperature)
-                   for index, probs in enumerate(probabilities) for temperature in (1, 2)}
+                   for index, probs in enumerate(probabilities) for temperature in (1, 2, 4)}
     for first, second in itertools.combinations(range(len(specs)), 2):
-        for t1, t2 in itertools.product((1, 2), repeat=2):
+        for t1, t2 in itertools.product((1, 2, 4), repeat=2):
             for ratio in (0.25, 0.5, 0.75):
                 probs = ratio * transformed[first, t1] + (1 - ratio) * transformed[second, t2]
                 add(f'{first}_{second}_t{t1}_{t2}_w{ratio}', probs,
@@ -91,11 +91,15 @@ def run(folders, output):
                      {**specs[second], 'weight': 1 - ratio, 'temperature': t2}])
     for count in range(3, len(specs) + 1):
         for indices in itertools.combinations(range(len(specs)), count):
-            for temperature in (1, 2):
-                probs = sum(transformed[index, temperature] for index in indices) / count
-                add(f'mean_{indices}_t{temperature}', probs,
-                    [{**specs[index], 'weight': 1 / count, 'temperature': temperature}
-                     for index in indices])
+            for temperature in (1, 2, 4):
+                for dominant in (None, *indices):
+                    ratios = [1 / count if dominant is None else
+                              0.5 if index == dominant else 0.5 / (count - 1) for index in indices]
+                    probs = sum(ratio * transformed[index, temperature]
+                                for index, ratio in zip(indices, ratios))
+                    add(f'mean_{indices}_t{temperature}_d{dominant}', probs,
+                        [{**specs[index], 'weight': ratio, 'temperature': temperature}
+                         for index, ratio in zip(indices, ratios)])
     table = pd.DataFrame(scores)
     table.to_csv(output / 'scores.csv', index=False)
     selected = int(table['accuracy'].idxmax())
