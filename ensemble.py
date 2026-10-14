@@ -34,7 +34,9 @@ def run(folders, output):
     labels = np.load('input/val_labels.npy')
     weights = torch.load('input/baseline.pth', map_location='cpu', weights_only=True)
     torch.set_num_threads(4)
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.allow_tf32 = False
     loaders = {split: DataLoader(Drawings(np.load(f'input/{split}_images.npy', mmap_mode='r')),
                                 batch_size=512, pin_memory=True, num_workers=4,
                                 persistent_workers=True)

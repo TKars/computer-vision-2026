@@ -111,11 +111,18 @@ Mixup смешивает две картинки и вычисляет loss ка
 ## Проверка и просмотр результатов
 
 ```bash
-.venv/bin/python verify.py output/run-20261014
+.venv/bin/python verify.py output/ensemble-20261014
 .venv/bin/jupyter lab results.ipynb
 ```
 
 `verify.py` заново вычисляет полный validation и все test-предсказания из сохранённых весов. Проверяются совпадение метрики, порядок id и полное совпадение submission. `results.ipynb` показывает только завершённые основные эксперименты; проверочные маленькие выборки в него не входят.
+
+Для inference используются фиксированные алгоритмы cuDNN, без benchmark и TF32. Если submission был создан со старыми настройками, пересоздать его и отдельно проверить:
+
+```bash
+.venv/bin/python verify.py output/ensemble-20261014 --write-submission
+.venv/bin/python verify.py output/ensemble-20261014
+```
 
 ## Архив для передачи
 

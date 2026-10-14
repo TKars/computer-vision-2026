@@ -11,7 +11,7 @@ from ensemble import load_model, temper
 from train import Drawings, predict
 
 
-def verify(output):
+def verify(output, write_submission=False):
     output = Path(output)
     summary = json.loads((output / 'summary.json').read_text())
     specs = [{**item, 'folder': item.get('folder', output.name),
@@ -20,7 +20,9 @@ def verify(output):
               'temperature': item.get('temperature', 1)} for item in summary['models']]
     assert abs(sum(spec['weight'] for spec in specs) - 1) < 1e-8
     torch.set_num_threads(4)
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.allow_tf32 = False
     weights = torch.load('input/baseline.pth', map_location='cpu', weights_only=True)
     labels = np.load('input/val_labels.npy')
     loaders = {split: DataLoader(Drawings(np.load(f'input/{split}_images.npy', mmap_mode='r')),
@@ -37,6 +39,15 @@ def verify(output):
         predictions[split] = combined.argmax(1)
     correct = int((predictions['val'] == labels).sum())
     score = correct / len(labels)
+    if write_submission:
+        pd.DataFrame({'id': np.arange(len(predictions['test'])),
+                      'label': predictions['test']}).to_csv(output / 'submission.csv', index=False)
+        summary['selected'].update(correct=correct, accuracy=score)
+        summary['inference'] = {'cudnn_benchmark': False, 'cudnn_deterministic': True,
+                                'cudnn_allow_tf32': False}
+        summary['val_above_6_threshold'] = score > .76102
+        summary['val_above_8_threshold'] = score > .77489
+        (output / 'summary.json').write_text(json.dumps(summary, indent=2))
     assert abs(score - summary['selected']['accuracy']) <= 1e-4
     submission = pd.read_csv(output / 'submission.csv')
     assert submission.columns.tolist() == ['id', 'label']
@@ -55,5 +66,6 @@ def verify(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('output')
+    parser.add_argument('--write-submission', action='store_true')
     args = parser.parse_args()
-    verify(args.output)
+    verify(args.output, args.write_submission)
