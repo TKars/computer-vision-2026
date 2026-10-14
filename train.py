@@ -1,212 +1,260 @@
+import argparse
+import json
+import math
+import random
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 import pandas as pd
+import timm
 import torch
 from torch import nn
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
+from torch.nn import functional as F
+from torch.utils.data import DataLoader, Dataset
 from torchvision.models import resnet18
-from torchvision.models.resnet import BasicBlock
-from tqdm.auto import tqdm
 
-assert torch.cuda.is_available(), "PyTorch не видит NVIDIA GPU"
-device = torch.device("cuda")
-print(torch.cuda.get_device_name(0), torch.__version__)
-
-seed = 42
-batch_size = 512
-compare_epochs = 20
-finetune_epochs = 30
-
-def set_seed():
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-set_seed()
-torch.backends.cudnn.benchmark = True
-data_dir = Path("input")
-baseline_path = data_dir / "baseline.pth"
-output_dir = Path("output")
-output_dir.mkdir(exist_ok=True)
-
-train_images = np.load(data_dir / "train_images.npy", mmap_mode="r")
-train_labels = np.load(data_dir / "train_labels.npy", mmap_mode="r")
-val_images = np.load(data_dir / "val_images.npy", mmap_mode="r")
-val_labels = np.load(data_dir / "val_labels.npy", mmap_mode="r")
-test_images = np.load(data_dir / "test_images.npy", mmap_mode="r")
-classes = np.load(data_dir / "classes.npy")
-num_classes = len(classes)
-
-assert len(train_images) == len(train_labels)
-assert len(val_images) == len(val_labels)
-print(f"Train: {len(train_images)}, validation: {len(val_images)}, test: {len(test_images)}, classes: {num_classes}")
-
-augmentation = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomAffine(10, translate=(0.05, 0.05), scale=(0.9, 1.1),
-                            interpolation=transforms.InterpolationMode.BILINEAR),
-])
 
 class Drawings(Dataset):
-    def __init__(self, images, labels=None, augment=False):
+    def __init__(self, images, labels=None):
         self.images = images
         self.labels = labels
-        self.augment = augment
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, index):
-        image = torch.from_numpy(self.images[index].copy()).reshape(1, 28, 28).float() / 255
-        if self.augment:
-            image = augmentation(image)
-        image = (image - 0.5) / 0.5
+        image = torch.from_numpy(self.images[index].copy()).reshape(1, 28, 28)
         if self.labels is None:
             return image
         return image, int(self.labels[index])
 
-train_loader = DataLoader(Drawings(train_images, train_labels, augment=True),
-                          batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
-val_loader = DataLoader(Drawings(val_images, val_labels), batch_size=batch_size,
-                        shuffle=False, num_workers=0, pin_memory=True)
-test_loader = DataLoader(Drawings(test_images), batch_size=batch_size,
-                         shuffle=False, num_workers=0, pin_memory=True)
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def make_model(stem, weights):
+    model = resnet18(weights=None, num_classes=345)
+    model.conv1 = nn.Conv2d(1, 64, 7, stride=2, padding=3, bias=False)
+    model.load_state_dict(weights)
+    if stem == 3:
+        kernel = model.conv1.weight.detach()[:, :, 2:5, 2:5].clone()
+        model.conv1 = nn.Conv2d(1, 64, 3, padding=1, bias=False)
+        with torch.no_grad():
+            model.conv1.weight.copy_(kernel)
+    elif stem == 7:
+        model.conv1.stride = (1, 1)
+    if stem:
+        model.maxpool = nn.Identity()
+    return model.cuda().to(memory_format=torch.channels_last)
+
+
+def prepare(images, augment=False):
+    images = images.cuda(non_blocking=True).float().div_(255)
+    if augment:
+        count = len(images)
+        angle = torch.empty(count, device='cuda').uniform_(-10, 10) * math.pi / 180
+        scale = torch.empty(count, device='cuda').uniform_(0.9, 1.1)
+        flip = torch.where(torch.rand(count, device='cuda') < 0.5, -1.0, 1.0)
+        theta = torch.zeros(count, 2, 3, device='cuda')
+        theta[:, 0, 0] = angle.cos() / scale * flip
+        theta[:, 0, 1] = -angle.sin() / scale
+        theta[:, 1, 0] = angle.sin() / scale * flip
+        theta[:, 1, 1] = angle.cos() / scale
+        theta[:, :, 2] = torch.empty(count, 2, device='cuda').uniform_(-0.1, 0.1)
+        grid = F.affine_grid(theta, images.shape, align_corners=False)
+        images = F.grid_sample(images, grid, align_corners=False)
+    return images.mul_(2).sub_(1).contiguous(memory_format=torch.channels_last)
+
 
 @torch.inference_mode()
-def accuracy(model):
+def accuracy(model, loader):
     model.eval()
     correct = 0
-    for images, labels in val_loader:
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        correct += (model(images).argmax(1) == labels).sum().item()
-    return correct / len(val_labels)
-
-baseline = resnet18(weights=None, num_classes=num_classes)
-baseline.conv1 = nn.Conv2d(1, 64, 7, stride=2, padding=3, bias=False)
-baseline.load_state_dict(torch.load(baseline_path, map_location="cpu", weights_only=True))
-baseline.to(device)
-baseline_accuracy = accuracy(baseline)
-baseline.cpu()
-print(f"Baseline accuracy: {baseline_accuracy:.5f}")
-
-def make_model(width):
-    layers = [
-        nn.Conv2d(1, width, 3, padding=1, bias=False),
-        nn.BatchNorm2d(width),
-        nn.ReLU(inplace=True),
-    ]
-    in_channels = width
-    for stage in range(4):
-        out_channels = width * 2 ** stage
-        stride = 1 if stage == 0 else 2
-        downsample = None
-        if stride == 2:
-            downsample = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, 1, stride=2, bias=False),
-                nn.BatchNorm2d(out_channels),
-            )
-        layers.extend([
-            BasicBlock(in_channels, out_channels, stride=stride, downsample=downsample),
-            BasicBlock(out_channels, out_channels),
-        ])
-        in_channels = out_channels
-    layers.extend([nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(in_channels, num_classes)])
-    model = nn.Sequential(*layers)
-    for layer in model.modules():
-        if isinstance(layer, nn.Conv2d):
-            nn.init.kaiming_normal_(layer.weight, mode="fan_out", nonlinearity="relu")
-    return model
-
-history = []
+    for images, labels in loader:
+        predictions = model(prepare(images)).argmax(1)
+        correct += (predictions == labels.cuda(non_blocking=True)).sum().item()
+    return correct / len(loader.dataset)
 
 
-def fit(model, epochs, lr, name, best_accuracy=0.0):
-    checkpoint = output_dir / f"{name}.pth"
+@torch.inference_mode()
+def predict(model, loader, flip=False):
+    model.eval()
+    probabilities = []
+    for batch in loader:
+        images = prepare(batch[0] if isinstance(batch, (tuple, list)) else batch)
+        probs = model(images).softmax(1)
+        if flip:
+            probs = (probs + model(images.flip(-1)).softmax(1)) / 2
+        probabilities.append(probs.cpu().numpy())
+    return np.concatenate(probabilities)
+
+
+def fit(model, train_loader, val_loader, output, name, seconds, epochs, lr,
+        history, best_accuracy=0.0):
+    checkpoint = output / f'{name}.pth'
     torch.save(model.state_dict(), checkpoint)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
-    scaler = torch.amp.GradScaler("cuda")
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, eta_min=1e-5)
+    scaler = torch.amp.GradScaler('cuda')
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
-
+    deadline = perf_counter() + seconds
     for epoch in range(1, epochs + 1):
+        if perf_counter() >= deadline:
+            break
         start = perf_counter()
         model.train()
-        loss_sum = 0.0
-        for images, labels in tqdm(train_loader, desc=f"{name} {epoch}/{epochs}", leave=False):
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
+        loss_sum, correct, count = 0.0, 0, 0
+        for step, (images, labels) in enumerate(train_loader, 1):
+            images = prepare(images, augment=True)
+            labels = labels.cuda(non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast("cuda"):
-                loss = criterion(model(images), labels)
+            with torch.amp.autocast('cuda'):
+                logits = model(images)
+                loss = criterion(logits, labels)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
             loss_sum += loss.item() * len(labels)
-
-        val_accuracy = accuracy(model)
-        row = {"model": name, "epoch": epoch, "loss": loss_sum / len(train_labels),
-               "accuracy": val_accuracy, "lr": optimizer.param_groups[0]["lr"],
-               "seconds": perf_counter() - start}
+            correct += (logits.detach().argmax(1) == labels).sum().item()
+            count += len(labels)
+            if step == 10 or step % 200 == 0:
+                print(f'{name} epoch={epoch} step={step}/{len(train_loader)} loss={loss_sum/count:.4f}', flush=True)
+            if perf_counter() >= deadline:
+                break
+        score = accuracy(model, val_loader)
+        row = {'model': name, 'epoch': epoch, 'loss': loss_sum / count,
+               'train_accuracy': correct / count, 'accuracy': score, 'examples': count,
+               'lr': optimizer.param_groups[0]['lr'], 'seconds': perf_counter() - start}
         history.append(row)
-        pd.DataFrame(history).to_csv(output_dir / "history.csv", index=False)
-        print(f"{name} {epoch}/{epochs}: loss={row['loss']:.4f}, accuracy={val_accuracy:.5f}, seconds={row['seconds']:.0f}")
-        if val_accuracy > best_accuracy:
-            best_accuracy = val_accuracy
+        pd.DataFrame(history).to_csv(output / 'history.csv', index=False)
+        print(f'{name} epoch={epoch} accuracy={score:.5f} seconds={row["seconds"]:.1f}', flush=True)
+        if score > best_accuracy:
+            best_accuracy = score
             torch.save(model.state_dict(), checkpoint)
         scheduler.step()
-
-    model.load_state_dict(torch.load(checkpoint, map_location="cpu", weights_only=True))
+    model.load_state_dict(torch.load(checkpoint, map_location='cpu', weights_only=True))
     return best_accuracy
 
-results = []
-for width in (32, 64):
-    set_seed()
-    model = make_model(width).to(device)
-    set_seed()
-    score = fit(model, compare_epochs, 1e-3, f"resnet{width}")
-    results.append({"width": width, "accuracy": score})
-    pd.DataFrame(results).to_csv(output_dir / "comparison.csv", index=False)
+
+def run(minutes=165, output='output/run', batch_size=512, smoke=False):
+    assert torch.cuda.is_available(), 'PyTorch не видит NVIDIA GPU'
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    assert not (output / 'history.csv').exists(), 'Укажите новую папку для запуска'
+    start = perf_counter()
+    deadline = start + minutes * 60
+    set_seed(42)
+    torch.set_num_threads(4)
+    torch.backends.cudnn.benchmark = True
+    data = Path('input')
+    arrays = {name: np.load(data / f'{name}.npy', mmap_mode='r')
+              for name in ('train_images', 'train_labels', 'val_images', 'val_labels', 'test_images')}
+    if smoke:
+        arrays = {name: values[:64] for name, values in arrays.items()}
+        batch_size = 16
+    loaders = {}
+    for split in ('train', 'val', 'test'):
+        dataset = Drawings(arrays[f'{split}_images'], arrays.get(f'{split}_labels'))
+        loaders[split] = DataLoader(dataset, batch_size=batch_size, shuffle=split == 'train',
+                                   num_workers=0 if smoke else 4, pin_memory=True,
+                                   persistent_workers=not smoke)
+    weights = torch.load(data / 'baseline.pth', map_location='cpu', weights_only=True)
+    config = {'minutes': minutes, 'batch_size': batch_size, 'seed': 42, 'stems': [3, 7],
+              'compare_epochs': 40, 'finetune_epochs': 30, 'compare_lr': 3e-4,
+              'finetune_lr': 1e-4, 'torch': torch.__version__, 'gpu': torch.cuda.get_device_name(0)}
+    (output / 'config.json').write_text(json.dumps(config, indent=2))
+    (output / 'source.py').write_text(Path(__file__).read_text())
+    print(json.dumps(config), flush=True)
+    baseline = timm.create_model('resnet18', pretrained=False, num_classes=345, in_chans=1).cuda().eval()
+    baseline.load_state_dict(weights)
+    baseline_probs = predict(baseline, loaders['val'])
+    labels = arrays['val_labels']
+    baseline_accuracy = float((baseline_probs.argmax(1) == labels).mean())
+    np.save(output / 'baseline_val_probs.npy', baseline_probs)
+    scores = [{'model': 'baseline', 'accuracy': baseline_accuracy}]
+    pd.DataFrame(scores).to_csv(output / 'scores.csv', index=False)
+    print(f'Baseline accuracy={baseline_accuracy:.8f} correct={int((baseline_probs.argmax(1)==labels).sum())}/{len(labels)}', flush=True)
+    del baseline, baseline_probs
+    torch.cuda.empty_cache()
+    history, results = [], []
+    seconds = max(0, (deadline - perf_counter() - (30 if smoke else 600)) / 3)
+    for stem in (3, 7):
+        set_seed(42)
+        model = make_model(stem, weights)
+        score = fit(model, loaders['train'], loaders['val'], output, f'resnet18_{stem}',
+                    seconds, 1 if smoke else 40, 3e-4, history)
+        results.append({'stem': stem, 'accuracy': score})
+        scores.append({'model': f'resnet18_{stem}', 'accuracy': score})
+        pd.DataFrame(scores).to_csv(output / 'scores.csv', index=False)
+        del model
+        torch.cuda.empty_cache()
+    best = max(results, key=lambda row: row['accuracy'])
+    set_seed(42)
+    model = make_model(best['stem'], weights)
+    model.load_state_dict(torch.load(output / f'resnet18_{best["stem"]}.pth', map_location='cpu', weights_only=True))
+    final_score = fit(model, loaders['train'], loaders['val'], output, 'finetuned',
+                      max(0, deadline - perf_counter() - (30 if smoke else 600)),
+                      1 if smoke else 30, 1e-4, history, best['accuracy'])
+    scores.append({'model': 'finetuned', 'accuracy': final_score})
     del model
     torch.cuda.empty_cache()
+    other_stem = 7 if best['stem'] == 3 else 3
+    specifications = [{'stem': best['stem'], 'checkpoint': 'finetuned.pth'},
+                      {'stem': other_stem, 'checkpoint': f'resnet18_{other_stem}.pth'}]
+    probabilities = []
+    for spec in specifications:
+        model = make_model(spec['stem'], weights)
+        model.load_state_dict(torch.load(output / spec['checkpoint'], map_location='cpu', weights_only=True))
+        probs = predict(model, loaders['val'], flip=True)
+        probabilities.append(probs)
+        np.save(output / f'{spec["checkpoint"][:-4]}_val_tta.npy', probs)
+        scores.append({'model': spec['checkpoint'][:-4] + '_tta', 'accuracy': float((probs.argmax(1) == labels).mean())})
+        del model
+    ensemble_accuracy = float(((probabilities[0] + probabilities[1]).argmax(1) == labels).mean())
+    scores.append({'model': 'ensemble_tta', 'accuracy': ensemble_accuracy})
+    pd.DataFrame(scores).to_csv(output / 'scores.csv', index=False)
+    selected = max(scores, key=lambda row: row['accuracy'])
+    if selected['model'] == 'ensemble_tta':
+        chosen, flip = specifications, True
+    elif selected['model'] == 'baseline':
+        chosen, flip = [{'stem': 0, 'checkpoint': None}], False
+    elif selected['model'].startswith('finetuned'):
+        chosen, flip = [specifications[0]], selected['model'].endswith('_tta')
+    else:
+        stem = int(selected['model'].split('_')[1])
+        chosen, flip = [{'stem': stem, 'checkpoint': f'resnet18_{stem}.pth'}], selected['model'].endswith('_tta')
+    test_probs = None
+    for spec in chosen:
+        model = make_model(spec['stem'], weights)
+        if spec['checkpoint']:
+            model.load_state_dict(torch.load(output / spec['checkpoint'], map_location='cpu', weights_only=True))
+        probs = predict(model, loaders['test'], flip=flip)
+        test_probs = probs if test_probs is None else test_probs + probs
+        del model
+    submission = pd.DataFrame({'id': np.arange(len(test_probs)), 'label': test_probs.argmax(1)})
+    assert submission['label'].between(0, 344).all()
+    submission.to_csv(output / 'submission.csv', index=False)
+    summary = {'selected': selected, 'models': chosen, 'flip_tta': flip,
+               'delta_baseline': selected['accuracy'] - baseline_accuracy,
+               'val_above_6_threshold': selected['accuracy'] > 0.76102,
+               'val_above_8_threshold': selected['accuracy'] > 0.77489,
+               'seconds': perf_counter() - start, 'submission_rows': len(submission)}
+    (output / 'summary.json').write_text(json.dumps(summary, indent=2))
+    print(pd.DataFrame(scores).to_string(index=False), flush=True)
+    print(json.dumps(summary), flush=True)
+    return summary
 
-pd.DataFrame(results)
 
-best = max(results, key=lambda row: row["accuracy"])
-best_width = best["width"]
-set_seed()
-model = make_model(best_width).to(device)
-model.load_state_dict(torch.load(output_dir / f"resnet{best_width}.pth", map_location="cpu", weights_only=True))
-print(f"ResNet {best_width}, accuracy before finetuning: {best['accuracy']:.5f}")
-final_accuracy = fit(model, finetune_epochs, 3e-4, "best_model", best["accuracy"])
-
-scores = pd.DataFrame([
-    {"model": "baseline", "accuracy": baseline_accuracy},
-    *[{"model": f"resnet{row['width']}", "accuracy": row["accuracy"]} for row in results],
-    {"model": f"resnet{best_width}_finetuned", "accuracy": final_accuracy},
-])
-scores.to_csv(output_dir / "scores.csv", index=False)
-scores
-
-if baseline_accuracy > final_accuracy:
-    del model
-    model = baseline.to(device)
-    selected_model = "baseline"
-else:
-    selected_model = f"resnet{best_width}_finetuned"
-model.eval()
-
-predictions = []
-with torch.inference_mode():
-    for images in tqdm(test_loader, desc="Test"):
-        images = images.to(device, non_blocking=True)
-        predictions.extend(model(images).argmax(1).cpu().tolist())
-
-submission = pd.DataFrame({"id": np.arange(len(test_images)), "label": predictions})
-assert len(submission) == len(test_images)
-assert submission["label"].between(0, num_classes - 1).all()
-submission.to_csv(output_dir / "submission.csv", index=False)
-print(f"Model: {selected_model}, validation accuracy: {max(baseline_accuracy, final_accuracy):.5f}")
-submission.head()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--minutes', type=float, default=165)
+    parser.add_argument('--output', default='output/run')
+    parser.add_argument('--batch-size', type=int, default=512)
+    parser.add_argument('--smoke', action='store_true')
+    args = parser.parse_args()
+    run(args.minutes, args.output, args.batch_size, args.smoke)

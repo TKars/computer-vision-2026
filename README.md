@@ -1,41 +1,28 @@
 # Quick, Draw!
 
-`quick_draw.ipynb` — локальный запуск: проверка baseline, сравнение ResNet с шириной 32 и 64, дообучение победителя, `submission.csv`.
+`train.py` проверяет выданный baseline на полном validation, сравнивает два ResNet18, дообучает лучший и сохраняет submission. `quick_draw.ipynb` запускает тот же код из Jupyter.
 
-`train.py` выполняет тот же код без Jupyter. `quick_draw_kaggle.ipynb` — версия с путями Kaggle.
+Оба ResNet начинают с `baseline.pth`. Входная свёртка имеет размер 3×3 или 7×7, stride=1; начальный max pooling убран. Для 3×3 используется центральная часть исходного ядра. Остальные веса сохраняются. Изображения остаются 28×28.
 
-## Установка
+`quick_draw_kaggle.ipynb` — прежний эксперимент с моделями ширины 32 и 64, обучаемыми с нуля.
 
-Python 3.11 или 3.12, NVIDIA GPU.
+## Окружение
 
-```bash
-python -m venv .venv
-```
-
-Windows PowerShell:
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-Linux:
+На домашнем ПК используется Python 3.14, PyTorch 2.13.0, torchvision 0.28.0, CUDA 13.0 и RTX 4070 Ti. PyTorch устанавливается из [официального CUDA-репозитория](https://pytorch.org/get-started/previous-versions/).
 
 ```bash
+python3 -m venv .venv
 source .venv/bin/activate
-```
-
-Установить `torch` и `torchvision` с CUDA командой из [селектора PyTorch](https://pytorch.org/get-started/locally/). Нужен PyTorch 2.3 или новее.
-
-```bash
+python -m pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -r requirements.txt
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-Последняя команда должна вывести `True`.
+Если в Ubuntu отсутствует `ensurepip`, создать окружение с `--without-pip`, скачать `https://bootstrap.pypa.io/get-pip.py` и выполнить его через `.venv/bin/python` перед установкой зависимостей.
 
 ## Данные
 
-Распаковать `quick_draw_input.zip` в `input/` рядом с ноутбуком:
+Распаковать `quick_draw_input.zip` в `input/`:
 
 ```text
 input/
@@ -50,26 +37,45 @@ input/
 
 Архив передаётся отдельно. Данные, веса и результаты исключены из Git.
 
-## Запуск
-
-Из этой папки:
+## Запуск по SSH
 
 ```bash
-jupyter lab quick_draw.ipynb
+ssh ubuntu-tiger
+cd /home/timk/computer-vision-2026
+mkdir -p output/run
+nohup .venv/bin/python -u train.py --minutes 165 --output output/run > output/run/train.log 2>&1 < /dev/null &
 ```
 
-Запустить все ячейки. Или запустить скрипт:
+Обучение продолжится после отключения SSH. Ход работы:
 
 ```bash
-python train.py
+tail -f output/run/train.log
 ```
 
-В начале кода задаются `batch_size`, `compare_epochs` и `finetune_epochs`. При нехватке видеопамяти уменьшить `batch_size` с 512 до 256 или 128.
+Для нового запуска указать новую папку `--output`. При нехватке видеопамяти добавить `--batch-size 256` или `128`.
 
-В локальном ноутбуке `num_workers=0`, чтобы он работал и на Windows.
+Проверка всего процесса на небольшой выборке:
 
-Оба ResNet обучаются с нуля на одном train и проверяются на одном validation. Каждый получает 20 эпох, победитель — ещё 30. В submission используется модель с наибольшей validation accuracy, включая baseline. Обучение использует только выданный подсэмпл соревнования.
+```bash
+.venv/bin/python train.py --smoke --minutes 2 --output output/smoke
+```
 
-Результаты сохраняются в `output/`: веса, `history.csv`, `comparison.csv`, `scores.csv` и `submission.csv`.
+Из Jupyter:
 
-Baseline проверен на полном validation: accuracy 0.67805. Новые модели ещё не обучались на GPU.
+```bash
+.venv/bin/jupyter lab quick_draw.ipynb
+```
+
+## Эксперименты
+
+Обучение использует только train. Каждый вариант получает одинаковый лимит времени и не более 40 эпох: AdamW, lr=0.0003, weight decay=0.0001, cosine schedule, label smoothing=0.05. Победитель получает до 30 дополнительных эпох с lr=0.0001. Часть времени оставляется на проверку и inference.
+
+Поворот до 10°, сдвиг до 5%, масштаб 0.9–1.1 и горизонтальное отражение применяются отдельно к каждому изображению на GPU. Используется AMP. На каждой эпохе вычисляется accuracy на всём validation без аугментаций, сохраняются метрики и лучшие веса.
+
+В конце сравниваются одиночные модели, усреднение original/flip и ансамбль двух вариантов. Способ получения submission выбирается по validation, test используется только для предсказаний.
+
+В папке запуска сохраняются `history.csv`, `scores.csv`, веса, `config.json`, копия исходного кода, `summary.json`, вероятности на validation и `submission.csv`.
+
+В условии порог для 6 баллов — строго выше 0.76102, для 8 — строго выше 0.77489. Отдельного порога для 7 нет. Проверка этих порогов на validation помогает выбрать модель; баллы зависят от результата на Kaggle.
+
+Исходный baseline на полном validation на GPU: 70182/103500 = 0.67808696. CPU-проверка дала 70178/103500 = 0.67804831.
