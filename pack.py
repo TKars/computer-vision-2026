@@ -17,7 +17,7 @@ def pack(best, archive):
     if best.name.startswith('vit-'):
         files.extend([Path('vit.py'), Path('vit_tta.py'), Path('class_errors.py'), Path('vit_results.ipynb')])
     if best.name.startswith('pretrained-vit-'):
-        files.extend([Path('pretrained_vit.py'), Path('finish_pretrained.py'), Path('pretrained_results.ipynb')])
+        files.extend([Path('pretrained_vit.py'), Path('vit_tta.py'), Path('finish_pretrained.py'), Path('pretrained_results.ipynb')])
     files.append(Path('input/baseline.pth'))
     folders = [Path('output') / name for name in ['run-20261014', 'resize56-20261014',
                                                'regularized-20261014', 'regularized-fixed-20261014', 'ensemble-20261014']]
