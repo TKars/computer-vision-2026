@@ -28,13 +28,21 @@ class Tiny(nn.Module):
 
 class AdaptiveLRTest(unittest.TestCase):
     def test_checkpoint_and_resume(self):
-        arrays = {name: np.zeros((64, 784), dtype=np.uint8)
+        arrays = {name: np.zeros((256 if name == 'train_images' else 64, 784), dtype=np.uint8)
                   for name in ['train_images', 'val_images', 'test_images']}
-        arrays.update(train_labels=np.zeros(64, dtype=np.int64), val_labels=np.zeros(64, dtype=np.int64))
+        arrays.update(train_labels=np.zeros(256, dtype=np.int64), val_labels=np.zeros(64, dtype=np.int64))
         dataset = TensorDataset(torch.zeros(64, 1, 28, 28), torch.zeros(64, dtype=torch.long))
         loaders = {name: DataLoader(dataset, batch_size=64) for name in ['train', 'val', 'test']}
+        training = TensorDataset(torch.zeros(256, 1, 28, 28), torch.zeros(256, dtype=torch.long))
+        loaders['train'] = DataLoader(training, batch_size=64)
         probabilities = np.eye(345, dtype=np.float32)[np.zeros(64, dtype=int)]
         original_load = torch.load
+        original_step = torch.optim.AdamW.step
+        rates = []
+
+        def step(optimizer, *args, **kwargs):
+            rates.append(optimizer.param_groups[0]['lr'])
+            return original_step(optimizer, *args, **kwargs)
 
         def load(path, **kwargs):
             if str(path) in ['input/baseline.pth', 'output/regularized-fixed-20261014/model.pth']:
@@ -56,6 +64,7 @@ class AdaptiveLRTest(unittest.TestCase):
             stack.enter_context(patch.object(torch.cuda, 'get_rng_state_all', lambda: []))
             stack.enter_context(patch.object(torch.cuda, 'set_rng_state_all', lambda *args: None))
             stack.enter_context(patch.object(torch, 'load', load))
+            stack.enter_context(patch.object(torch.optim.AdamW, 'step', step))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             first, second = Path(directory) / 'first', Path(directory) / 'resumed'
             trainer.run(first, time.time() + 120, smoke=True, extra_epochs=3, schedule='plateau')
@@ -63,14 +72,15 @@ class AdaptiveLRTest(unittest.TestCase):
             self.assertEqual(a['scheduler']['last_epoch'], 3)
             self.assertAlmostEqual(a['optimizer']['param_groups'][0]['lr'], .00005)
             self.assertAlmostEqual(a['history'][-1]['next_lr'], .00005)
+            self.assertEqual(rates[:2], [.00005, .0001])
             trainer.run(second, time.time() + 120, smoke=True, resume=first, extra_epochs=1)
             b = original_load(second / 'last.pth', map_location='cpu', weights_only=False)
             self.assertEqual(b['config']['schedule'], 'plateau')
-            self.assertEqual(b['steps'], 4)
+            self.assertEqual(b['steps'], 16)
             self.assertEqual(b['scheduler']['last_epoch'], 4)
             self.assertEqual(b['scheduler']['num_bad_epochs'], 1)
             self.assertEqual(b['optimizer']['param_groups'][0]['lr'], a['optimizer']['param_groups'][0]['lr'])
-            self.assertTrue(all(state['step'].item() == 4 for state in b['optimizer']['state'].values()))
+            self.assertTrue(all(state['step'].item() == 16 for state in b['optimizer']['state'].values()))
             config = json.loads((second / 'config.json').read_text())
             optimizer = torch.optim.AdamW([{'params': [nn.Parameter(torch.zeros(1))], 'lr': .0001},
                                            {'params': [nn.Parameter(torch.zeros(1))], 'lr': .001}])

@@ -140,6 +140,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
               'sampling': '48 random + 8/8 similar pair' if pairs else 'random permutation',
               'similar_pairs_sha256': pair_sha256,
               'schedule': schedule,
+              'warmup_steps': 0 if full_resume else max(1, len(loaders['train']) // 2),
               'train_examples': len(arrays['train_images']), 'val_examples': len(arrays['val_labels']),
               'torch': torch.__version__, 'timm': timm.__version__, 'gpu': torch.cuda.get_device_name(0)}
     if efficientnet:
@@ -218,7 +219,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
         (output / 'config.json').write_text(json.dumps(config, indent=2))
     training_deadline = deadline - (5 if smoke else 900)
     training_start = time.time()
-    warmup = 0 if full_resume else max(1, len(loaders['train']) // 2)
+    warmup = config['warmup_steps']
     checkpoint_time = time.monotonic()
 
     def write_progress(stage, epoch, batch, elapsed=0, remaining=None):
@@ -264,6 +265,9 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
                 for group in optimizer.param_groups:
                     group['lr'] = lr * group['scale']
             else:
+                if warmup and local_steps <= warmup:
+                    for group in optimizer.param_groups:
+                        group['lr'] = config['lr'] * local_steps / warmup * group['scale']
                 lr = optimizer.param_groups[0]['lr']
             images = prepare(images, augment=True, config=model.pretrained_cfg)
             targets = targets.cuda(non_blocking=True)
