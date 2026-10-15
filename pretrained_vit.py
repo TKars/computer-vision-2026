@@ -36,13 +36,13 @@ def make_network(name, pretrained=False):
                              drop_rate=0.2, drop_path_rate=0.1).cuda().to(memory_format=torch.channels_last)
 
 
-def setup(smoke=False):
+def setup(smoke=False, data_dir='input'):
     torch.set_num_threads(4)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.allow_tf32 = False
     torch.backends.cuda.matmul.allow_tf32 = False
-    arrays = {name: np.load(f'input/{name}.npy', mmap_mode='r')
+    arrays = {name: np.load(Path(data_dir) / f'{name}.npy', mmap_mode='r')
               for name in ('train_images', 'train_labels', 'val_images', 'val_labels', 'test_images')}
     if smoke:
         arrays = {name: value[:64] for name, value in arrays.items()}
@@ -80,14 +80,12 @@ def predict(model, loader, flip=False):
     return np.concatenate(probabilities)
 
 
-def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=None, extra_epochs=None):
+def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=None, extra_epochs=None, data_dir=None):
     assert resume_lr is None or (resume and resume_lr > 0)
     assert extra_epochs is None or extra_epochs > 0
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     assert not (output / 'config.json').exists(), 'Укажите новую папку для запуска'
-    arrays, loaders = setup(smoke)
-    set_seed(45)
     source = Path(resume) if resume else None
     if source and source.is_dir():
         parent = json.loads((source / 'config.json').read_text())
@@ -97,6 +95,14 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
     full_resume = saved is not None and 'optimizer' in saved
     parent = json.loads((source.parent / 'config.json').read_text()) if source else {}
     assert not source or parent['smoke'] == smoke, 'Проверочный checkpoint нельзя использовать для полного запуска'
+    data_dir = str(Path(data_dir or parent.get('data_dir', 'input')))
+    manifest = Path(data_dir) / 'manifest.json'
+    split_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.exists() else None
+    if source:
+        assert data_dir == parent.get('data_dir', 'input'), 'Разбивка checkpoint отличается'
+        assert split_sha256 == parent.get('split_sha256'), 'Индексы разбивки изменились'
+    arrays, loaders = setup(smoke, data_dir)
+    set_seed(45)
     model_name = parent.get('model', model_name)
     efficientnet = model_name == EFFICIENTNET
     filename = 'model.pth' if efficientnet else 'vit.pth'
@@ -113,6 +119,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
               'head_lr': 0.0003 if source else 0.001, 'weight_decay': 0.01,
               'label_smoothing': 0.05, 'ema_decay': 0.99, 'precision': 'bfloat16 autocast',
               'seed': 45, 'deadline_unix': deadline, 'smoke': smoke,
+              'data_dir': data_dir, 'split_sha256': split_sha256,
               'train_examples': len(arrays['train_images']), 'val_examples': len(arrays['val_labels']),
               'torch': torch.__version__, 'timm': timm.__version__, 'gpu': torch.cuda.get_device_name(0)}
     if efficientnet:
@@ -183,6 +190,13 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
     warmup = 0 if full_resume else max(1, len(loaders['train']) // 2)
     checkpoint_time = time.monotonic()
 
+    def write_progress(stage, epoch, batch, elapsed=0, remaining=None):
+        payload = {'stage': stage, 'epoch': epoch, 'batch': batch,
+                   'batches': len(loaders['train']), 'elapsed': elapsed,
+                   'remaining': remaining, 'updated_at': time.time()}
+        (output / 'progress.tmp').write_text(json.dumps(payload))
+        (output / 'progress.tmp').replace(output / 'progress.json')
+
     def checkpoint(epoch, batch, metrics):
         state = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
                  'ema': ema.module.state_dict(), 'epoch': epoch, 'batch': batch,
@@ -210,6 +224,8 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
         loader = DataLoader(loaders['train'].dataset, batch_size=64, sampler=order,
                             num_workers=4, persistent_workers=True, pin_memory=True,
                             generator=generator)
+        progress_time = 0
+        write_progress('train', epoch, skipped)
         for batch, (images, targets) in enumerate(loader, skipped + 1):
             steps += 1
             local_steps = steps - base_steps
@@ -234,11 +250,17 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
             count += len(targets)
             if local_steps == 1:
                 print(json.dumps({'first_batch_loss': loss.item(), 'examples': count}), flush=True)
+            if time.monotonic() - progress_time >= 5:
+                elapsed = time.time() - start
+                remaining = elapsed / (batch - skipped) * (len(loaders['train']) - batch)
+                write_progress('train', epoch, batch, elapsed, remaining)
+                progress_time = time.monotonic()
             if time.monotonic() - checkpoint_time >= 60:
                 checkpoint(epoch, batch, (loss_sum, correct, count))
                 checkpoint_time = time.monotonic()
             if time.time() >= training_deadline:
                 break
+        write_progress('val', epoch, batch, time.time() - start)
         raw = float((predict(model, loaders['val']).argmax(1) == arrays['val_labels']).mean())
         averaged = float((predict(ema.module, loaders['val']).argmax(1) == arrays['val_labels']).mean())
         row = {'epoch': epoch, 'loss': loss_sum / count, 'train_accuracy': correct / count,
@@ -259,7 +281,10 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
             config['estimated_epochs'] = epochs
             (output / 'config.json').write_text(json.dumps(config, indent=2))
         checkpoint(epoch, batch, (loss_sum, correct, count))
+        if batch == len(loaders['train']):
+            os.link(output / 'last.pth', output / f'epoch-{epoch:02d}.pth')
     assert history, 'Time limit expired before training'
+    write_progress('inference', epoch, batch)
     del optimizer, ema
     model.load_state_dict(torch.load(output / filename, map_location='cpu', weights_only=True))
     scores = []
@@ -294,7 +319,12 @@ def verify(output):
     output = Path(output)
     config = json.loads((output / 'config.json').read_text())
     summary = json.loads((output / 'summary.json').read_text())
-    arrays, loaders = setup(config['smoke'])
+    data_dir = config.get('data_dir', 'input')
+    manifest = Path(data_dir) / 'manifest.json'
+    split_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest() if manifest.exists() else None
+    assert split_sha256 == config.get('split_sha256'), 'Индексы разбивки изменились'
+    arrays, loaders = setup(config['smoke'], data_dir)
+    assert len(arrays['val_labels']) == config['val_examples']
     model = make_network(config['model'])
     filename = 'model.pth' if config['model'] == EFFICIENTNET else 'vit.pth'
     model.load_state_dict(torch.load(output / filename, map_location='cpu', weights_only=True))
@@ -322,10 +352,11 @@ if __name__ == '__main__':
     parser.add_argument('--resume')
     parser.add_argument('--resume-lr', type=float)
     parser.add_argument('--epochs', type=int)
+    parser.add_argument('--data-dir')
     parser.add_argument('--model', choices=[NAME, EFFICIENTNET], default=NAME)
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
     else:
         run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200),
-            args.smoke, args.resume, args.model, args.resume_lr, args.epochs)
+            args.smoke, args.resume, args.model, args.resume_lr, args.epochs, args.data_dir)
