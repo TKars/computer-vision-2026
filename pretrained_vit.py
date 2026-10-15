@@ -82,7 +82,7 @@ def predict(model, loader, flip=False):
 
 
 def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=None, extra_epochs=None, data_dir=None,
-        similar_pairs=None):
+        similar_pairs=None, schedule=None):
     assert resume_lr is None or (resume and resume_lr > 0)
     assert extra_epochs is None or extra_epochs > 0
     output = Path(output)
@@ -96,6 +96,8 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
     saved = torch.load(source, map_location='cpu', weights_only=False) if source else None
     full_resume = saved is not None and 'optimizer' in saved
     parent = json.loads((source.parent / 'config.json').read_text()) if source else {}
+    schedule = schedule or parent.get('schedule', 'cosine')
+    assert schedule in ('cosine', 'plateau')
     assert not source or parent['smoke'] == smoke, 'Проверочный checkpoint нельзя использовать для полного запуска'
     data_dir = str(Path(data_dir or parent.get('data_dir', 'input')))
     manifest = Path(data_dir) / 'manifest.json'
@@ -137,10 +139,14 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
               'data_dir': data_dir, 'split_sha256': split_sha256,
               'sampling': '48 random + 8/8 similar pair' if pairs else 'random permutation',
               'similar_pairs_sha256': pair_sha256,
+              'schedule': schedule,
               'train_examples': len(arrays['train_images']), 'val_examples': len(arrays['val_labels']),
               'torch': torch.__version__, 'timm': timm.__version__, 'gpu': torch.cuda.get_device_name(0)}
     if efficientnet:
         config.update(drop_rate=0.2, drop_path_rate=0.1)
+    if schedule == 'plateau':
+        config['plateau'] = {'mode': 'max', 'factor': 0.5, 'patience': 1, 'threshold': 0.0005,
+                             'threshold_mode': 'abs', 'min_lr': [1e-6, 1e-5]}
     if source:
         with source.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -196,6 +202,13 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
         (output / 'config.json').write_text(json.dumps(config, indent=2))
         print(json.dumps({'resumed_epoch': start_epoch, 'resumed_batch': start_batch,
                           'optimizer_restored': full_resume, 'best_accuracy': best}), flush=True)
+    scheduler = None
+    if schedule == 'plateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['plateau'])
+        if full_resume and parent.get('schedule') == 'plateau':
+            scheduler.load_state_dict(saved['scheduler'])
+        elif history:
+            scheduler.best = max(row['ema_accuracy'] for row in history)
     del saved
     base_epoch, base_steps = start_epoch, steps
     epochs = extra_epochs if extra_epochs is not None else (1 if smoke else 10)
@@ -217,6 +230,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
 
     def checkpoint(epoch, batch, metrics):
         state = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+                 'scheduler': scheduler.state_dict() if scheduler else None,
                  'ema': ema.module.state_dict(), 'epoch': epoch, 'batch': batch,
                  'steps': steps, 'metrics': metrics, 'history': history, 'config': config,
                  'python_rng': random.getstate(), 'numpy_rng': np.random.get_state(),
@@ -243,11 +257,14 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
         for batch, (images, targets) in enumerate(loader, skipped + 1):
             steps += 1
             local_steps = steps - base_steps
-            progress = max(0, min(1, (local_steps - warmup) / max(1, (epochs - base_epoch + 1) * len(loaders['train']) - warmup)))
-            lr = (1e-6 + 0.5 * (config['lr'] - 1e-6) * (1 + math.cos(math.pi * progress)))
-            lr *= min(1, local_steps / warmup) if warmup else 1
-            for group in optimizer.param_groups:
-                group['lr'] = lr * group['scale']
+            if scheduler is None:
+                progress = max(0, min(1, (local_steps - warmup) / max(1, (epochs - base_epoch + 1) * len(loaders['train']) - warmup)))
+                lr = (1e-6 + 0.5 * (config['lr'] - 1e-6) * (1 + math.cos(math.pi * progress)))
+                lr *= min(1, local_steps / warmup) if warmup else 1
+                for group in optimizer.param_groups:
+                    group['lr'] = lr * group['scale']
+            else:
+                lr = optimizer.param_groups[0]['lr']
             images = prepare(images, augment=True, config=model.pretrained_cfg)
             targets = targets.cuda(non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
@@ -280,6 +297,9 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
         row = {'epoch': epoch, 'loss': loss_sum / count, 'train_accuracy': correct / count,
                'accuracy': raw, 'ema_accuracy': averaged, 'examples': count,
                'lr': lr, 'seconds': time.time() - start}
+        if scheduler is not None:
+            scheduler.step(averaged)
+            row['next_lr'] = optimizer.param_groups[0]['lr']
         history.append(row)
         pd.DataFrame(history).to_csv(output / 'history.tmp', index=False)
         (output / 'history.tmp').replace(output / 'history.csv')
@@ -368,10 +388,11 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--data-dir')
     parser.add_argument('--similar-pairs')
+    parser.add_argument('--schedule', choices=['cosine', 'plateau'])
     parser.add_argument('--model', choices=[NAME, EFFICIENTNET], default=NAME)
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
     else:
         run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200),
-            args.smoke, args.resume, args.model, args.resume_lr, args.epochs, args.data_dir, args.similar_pairs)
+            args.smoke, args.resume, args.model, args.resume_lr, args.epochs, args.data_dir, args.similar_pairs, args.schedule)
