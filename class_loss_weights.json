@@ -1,0 +1,696 @@
+{
+  "source": "output/class-distribution95-20261015",
+  "source_predictions_sha256": "b225422730a8ed665c38270839a8ea21307d31248f96cca91f1418b44cfff801",
+  "source_classes_sha256": "00286f41ff975ac3639d25d67fecc3bbd2eb6b685478fec6b3acbd16ad727349",
+  "split_sha256": "f4556e10723ccbc24ae6d34c77df2726526892d1aa476d6120f58e421e4f9e1c",
+  "classes_sha256": "2a90dfeecf1d3da084616432f6e80e80443800d640ff2a919be2e378449c30ce",
+  "definition": "Fixed class recall on 100 validation examples; hard <50%, easy >=90%",
+  "hard": [
+    {
+      "id": 82,
+      "class": "cooler",
+      "correct": 34
+    },
+    {
+      "id": 183,
+      "class": "marker",
+      "correct": 34
+    },
+    {
+      "id": 131,
+      "class": "garden hose",
+      "correct": 36
+    },
+    {
+      "id": 3,
+      "class": "aircraft carrier",
+      "correct": 37
+    },
+    {
+      "id": 26,
+      "class": "bear",
+      "correct": 39
+    },
+    {
+      "id": 206,
+      "class": "oven",
+      "correct": 39
+    },
+    {
+      "id": 50,
+      "class": "bus",
+      "correct": 41
+    },
+    {
+      "id": 90,
+      "class": "cup",
+      "correct": 44
+    },
+    {
+      "id": 1,
+      "class": "The Great Wall of China",
+      "correct": 47
+    },
+    {
+      "id": 231,
+      "class": "pond",
+      "correct": 48
+    },
+    {
+      "id": 158,
+      "class": "hurricane",
+      "correct": 49
+    }
+  ],
+  "easy": [
+    {
+      "id": 11,
+      "class": "apple",
+      "correct": 90
+    },
+    {
+      "id": 14,
+      "class": "axe",
+      "correct": 90
+    },
+    {
+      "id": 38,
+      "class": "book",
+      "correct": 90
+    },
+    {
+      "id": 53,
+      "class": "cactus",
+      "correct": 90
+    },
+    {
+      "id": 60,
+      "class": "campfire",
+      "correct": 90
+    },
+    {
+      "id": 79,
+      "class": "compass",
+      "correct": 90
+    },
+    {
+      "id": 138,
+      "class": "hamburger",
+      "correct": 90
+    },
+    {
+      "id": 140,
+      "class": "hand",
+      "correct": 90
+    },
+    {
+      "id": 161,
+      "class": "jail",
+      "correct": 90
+    },
+    {
+      "id": 177,
+      "class": "lion",
+      "correct": 90
+    },
+    {
+      "id": 213,
+      "class": "paper clip",
+      "correct": 90
+    },
+    {
+      "id": 250,
+      "class": "sailboat",
+      "correct": 90
+    },
+    {
+      "id": 285,
+      "class": "stairs",
+      "correct": 90
+    },
+    {
+      "id": 304,
+      "class": "t-shirt",
+      "correct": 90
+    },
+    {
+      "id": 306,
+      "class": "teapot",
+      "correct": 90
+    },
+    {
+      "id": 5,
+      "class": "alarm clock",
+      "correct": 91
+    },
+    {
+      "id": 41,
+      "class": "bowtie",
+      "correct": 91
+    },
+    {
+      "id": 57,
+      "class": "camel",
+      "correct": 91
+    },
+    {
+      "id": 76,
+      "class": "clock",
+      "correct": 91
+    },
+    {
+      "id": 141,
+      "class": "harp",
+      "correct": 91
+    },
+    {
+      "id": 145,
+      "class": "helicopter",
+      "correct": 91
+    },
+    {
+      "id": 151,
+      "class": "hospital",
+      "correct": 91
+    },
+    {
+      "id": 155,
+      "class": "hourglass",
+      "correct": 91
+    },
+    {
+      "id": 266,
+      "class": "skateboard",
+      "correct": 91
+    },
+    {
+      "id": 293,
+      "class": "strawberry",
+      "correct": 91
+    },
+    {
+      "id": 315,
+      "class": "toilet",
+      "correct": 91
+    },
+    {
+      "id": 333,
+      "class": "washing machine",
+      "correct": 91
+    },
+    {
+      "id": 340,
+      "class": "wine glass",
+      "correct": 91
+    },
+    {
+      "id": 159,
+      "class": "ice cream",
+      "correct": 92
+    },
+    {
+      "id": 301,
+      "class": "swing set",
+      "correct": 92
+    },
+    {
+      "id": 309,
+      "class": "television",
+      "correct": 92
+    },
+    {
+      "id": 29,
+      "class": "bee",
+      "correct": 93
+    },
+    {
+      "id": 52,
+      "class": "butterfly",
+      "correct": 93
+    },
+    {
+      "id": 91,
+      "class": "diamond",
+      "correct": 93
+    },
+    {
+      "id": 175,
+      "class": "lightning",
+      "correct": 93
+    },
+    {
+      "id": 261,
+      "class": "sheep",
+      "correct": 93
+    },
+    {
+      "id": 143,
+      "class": "headphones",
+      "correct": 94
+    },
+    {
+      "id": 167,
+      "class": "ladder",
+      "correct": 94
+    },
+    {
+      "id": 241,
+      "class": "rain",
+      "correct": 94
+    },
+    {
+      "id": 242,
+      "class": "rainbow",
+      "correct": 94
+    },
+    {
+      "id": 267,
+      "class": "skull",
+      "correct": 94
+    },
+    {
+      "id": 271,
+      "class": "snail",
+      "correct": 94
+    },
+    {
+      "id": 291,
+      "class": "stop sign",
+      "correct": 94
+    },
+    {
+      "id": 298,
+      "class": "sun",
+      "correct": 94
+    },
+    {
+      "id": 324,
+      "class": "triangle",
+      "correct": 94
+    },
+    {
+      "id": 0,
+      "class": "The Eiffel Tower",
+      "correct": 95
+    },
+    {
+      "id": 2,
+      "class": "The Mona Lisa",
+      "correct": 95
+    },
+    {
+      "id": 204,
+      "class": "octopus",
+      "correct": 95
+    },
+    {
+      "id": 274,
+      "class": "snowflake",
+      "correct": 95
+    },
+    {
+      "id": 275,
+      "class": "snowman",
+      "correct": 95
+    },
+    {
+      "id": 328,
+      "class": "umbrella",
+      "correct": 95
+    },
+    {
+      "id": 88,
+      "class": "crown",
+      "correct": 96
+    },
+    {
+      "id": 107,
+      "class": "envelope",
+      "correct": 96
+    },
+    {
+      "id": 227,
+      "class": "pineapple",
+      "correct": 96
+    },
+    {
+      "id": 124,
+      "class": "flower",
+      "correct": 97
+    },
+    {
+      "id": 286,
+      "class": "star",
+      "correct": 98
+    }
+  ],
+  "downweight": 0.5,
+  "default_weight": 1.0,
+  "weights": [
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ]
+}

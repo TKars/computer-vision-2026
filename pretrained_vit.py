@@ -13,7 +13,6 @@ import pandas as pd
 import timm
 import torch
 from timm.utils import ModelEmaV3
-from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
@@ -81,8 +80,16 @@ def predict(model, loader, flip=False):
     return np.concatenate(probabilities)
 
 
+def classification_loss(logits, targets, weights=None):
+    if weights is None:
+        return F.cross_entropy(logits, targets, label_smoothing=0.05)
+    losses = F.cross_entropy(logits, targets, label_smoothing=0.05, reduction='none')
+    sample_weights = weights[targets]
+    return (losses * sample_weights).sum() / sample_weights.sum()
+
+
 def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=None, extra_epochs=None, data_dir=None,
-        similar_pairs=None, schedule=None):
+        similar_pairs=None, schedule=None, class_weights=None):
     assert resume_lr is None or (resume and resume_lr > 0)
     assert extra_epochs is None or extra_epochs > 0
     output = Path(output)
@@ -118,6 +125,20 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
         assert pair_config['classes_sha256'] == hashlib.sha256(Path('input/classes.npy').read_bytes()).hexdigest()
         pairs = [entry['ids'] for entry in pair_config['pairs']]
         (output / 'similar_pairs.json').write_text(pair_text)
+    weight_file = Path(class_weights) if class_weights else (
+        source.parent / 'class_weights.json' if parent.get('class_weights_sha256') else None)
+    weight_text = weight_file.read_text() if weight_file else None
+    weight_sha256 = hashlib.sha256(weight_text.encode()).hexdigest() if weight_text else None
+    if source:
+        assert weight_sha256 == parent.get('class_weights_sha256'), 'Для других весов loss начните отдельный pretrained-запуск'
+    weight_config = json.loads(weight_text) if weight_text else None
+    if weight_config:
+        assert not pairs, 'Взвешенный loss использует обычные случайные батчи'
+        assert weight_config['split_sha256'] == split_sha256, 'Веса loss получены на другой разбивке'
+        assert weight_config['classes_sha256'] == hashlib.sha256(Path('input/classes.npy').read_bytes()).hexdigest()
+        values = np.asarray(weight_config['weights'], dtype=np.float32)
+        assert values.shape == (345,) and np.isfinite(values).all() and (values > 0).all()
+        (output / 'class_weights.json').write_text(weight_text)
     arrays, loaders = setup(smoke, data_dir)
     set_seed(45)
     model_name = parent.get('model', model_name)
@@ -139,6 +160,8 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
               'data_dir': data_dir, 'split_sha256': split_sha256,
               'sampling': '48 random + 8/8 similar pair' if pairs else 'random permutation',
               'similar_pairs_sha256': pair_sha256,
+              'class_weights_sha256': weight_sha256,
+              'loss_weighting': 'target class weight * smoothed CE / sum of sample weights' if weight_config else None,
               'schedule': schedule,
               'warmup_steps': 0 if full_resume else max(1, len(loaders['train']) // 2),
               'train_examples': len(arrays['train_images']), 'val_examples': len(arrays['val_labels']),
@@ -161,7 +184,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
     optimizer = torch.optim.AdamW([
         {'params': [p for n, p in model.named_parameters() if not n.startswith(head_name + '.')], 'scale': 1},
         {'params': getattr(model, head_name).parameters(), 'scale': 10, 'lr': config['head_lr']}], lr=config['lr'], weight_decay=0.01)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+    loss_weights = torch.tensor(weight_config['weights'], dtype=torch.float32).cuda() if weight_config else None
     ema = ModelEmaV3(model, decay=0.99)
     history, best, steps = [], -1.0, 0
     start_epoch, start_batch, metrics = 1, 0, (0.0, 0, 0)
@@ -274,7 +297,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 logits = model(images)
-                loss = criterion(logits, targets)
+                loss = classification_loss(logits, targets, loss_weights)
             assert torch.isfinite(loss).item(), 'Loss is not finite'
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -392,6 +415,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--data-dir')
     parser.add_argument('--similar-pairs')
+    parser.add_argument('--class-weights')
     parser.add_argument('--schedule', choices=['cosine', 'plateau'])
     parser.add_argument('--model', choices=[NAME, EFFICIENTNET], default=NAME)
     args = parser.parse_args()
@@ -399,4 +423,5 @@ if __name__ == '__main__':
         verify(args.output)
     else:
         run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200),
-            args.smoke, args.resume, args.model, args.resume_lr, args.epochs, args.data_dir, args.similar_pairs, args.schedule)
+            args.smoke, args.resume, args.model, args.resume_lr, args.epochs, args.data_dir, args.similar_pairs, args.schedule,
+            args.class_weights)

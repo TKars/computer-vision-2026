@@ -428,3 +428,23 @@ Batch size 64, AdamW: lr=0.0001 для backbone, 0.001 для головы, weig
 ```bash
 .venv/bin/python class_distribution.py --output output/class-distribution-check
 ```
+
+## ViT с фиксированными весами loss
+
+Новый опыт `output/pretrained-vit-weighted-95-20261015` начинается с тех же внешних pretrained-весов ViT-S/16 на разбивке train 655500 / val 34500. Обычная случайная перестановка train, batch 64; sampler похожих классов отключён. План — 10 эпох, бюджет три часа с резервом 15 минут на итоговые проверки. AdamW backbone LR=1e-4/head=1e-3, weight decay 0.01, EMA 0.99, BF16; warmup половина эпохи и ReduceLROnPlateau по обычной EMA accuracy, как в предыдущем опыте.
+
+`class_loss_weights.json` фиксирует группы по предсказаниям ансамбля 77.7043% на 100 val-примерах каждого класса. Вес 0.5 у 11 классов с recall строго ниже 50% и у 56 классов с recall от 90% включительно; у остальных 278 вес 1.0. Списки не меняются по эпохам. Сложные классы: cooler, marker, garden hose, aircraft carrier, bear, oven, bus, cup, The Great Wall of China, pond, hurricane. Полный список обеих групп и вектор 345 весов находятся в JSON, SHA256 `97d48d48d5612a4d2c8e2b4bfc3a566db3a55e64bf40e457b614bee57af2d3e4`.
+
+Для каждого примера считается обычная cross-entropy с label smoothing 0.05, затем весь loss умножается на вес истинного класса. По батчу сумма делится на сумму весов примеров. Это вес примера, а не вес отдельных компонентов сглаженной метки. Val/test считаются без взвешивания; лучший checkpoint и scheduler используют обычную accuracy. Группы выбраны по этому же val, поэтому новая оценка на нём не независимая. Обучение по-прежнему использует только train.
+
+Предыдущий прогон с похожими батчами остановлен с сохранением полного состояния эпохи 8, batch 5125, steps 76826; лучший EMA эпохи 6 имел accuracy 75.0261%. `stopped.pth` и история сохранены на ПК и Mac, SHA256 `fcf7c469862b48d95977ab668f297df780ff013ecf51a8beb40398cf08ddb5a4`.
+
+Прошли пять CPU-проверок: формула взвешивания, относительные веса градиентов 0.5/1.0, неизменность обычного loss и при единичных весах, фиксированные группы, сохранение и продолжение AdamW/scheduler/весов. На настоящем ViT прошли два шага GPU с resume и отдельная проверка val/test по 64 примера без расхождений; это техническая проверка, не оценка качества. Первоначальная ошибка тестового скрипта при повторном импорте worker исправлена защитой `__main__`.
+
+Полное обучение фактически запущено, job PID 92289, training PID 92292. Первая batch loss 6.4980, GPU 97%, около 3779 MiB. Первый checkpoint эпохи 1, batch 1935, проверен: все 152 состояния AdamW конечны, sampler обычный, веса loss совпали с JSON. Резервная копия `launch-backup.pth`, SHA256 `a3f7a1c9758d657229ee84f4faa989f300556abec8d7a2b6cbc7196c7ec73eac`. Актуальный last.pth обновляется раз в минуту и после эпохи; отдельно сохраняются epoch-NN.pth и лучшие vit.pth/best.json.
+
+После обучения job отдельно проверит весь val/test и исполнит `vit95_weighted_results.ipynb` из корня проекта. Сейчас ноутбук — шаблон без результатов нового обучения. Дашборд `http://127.0.0.1:59690/` переключён на новый опыт. Нового heartbeat нет, автоматическое выключение не включено.
+
+```bash
+.venv/bin/python -u pretrained_vit.py --data-dir input/split95-seed45 --class-weights class_loss_weights.json --schedule plateau --epochs 10 --output output/weighted-check
+```

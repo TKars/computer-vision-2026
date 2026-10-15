@@ -28,6 +28,12 @@ class Tiny(nn.Module):
 
 class AdaptiveLRTest(unittest.TestCase):
     def test_checkpoint_and_resume(self):
+        self.check_checkpoint_and_resume()
+
+    def test_weighted_checkpoint_and_resume(self):
+        self.check_checkpoint_and_resume('class_loss_weights.json')
+
+    def check_checkpoint_and_resume(self, class_weights=None):
         arrays = {name: np.zeros((256 if name == 'train_images' else 64, 784), dtype=np.uint8)
                   for name in ['train_images', 'val_images', 'test_images']}
         arrays.update(train_labels=np.zeros(256, dtype=np.int64), val_labels=np.zeros(64, dtype=np.int64))
@@ -67,7 +73,8 @@ class AdaptiveLRTest(unittest.TestCase):
             stack.enter_context(patch.object(torch.optim.AdamW, 'step', step))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             first, second = Path(directory) / 'first', Path(directory) / 'resumed'
-            trainer.run(first, time.time() + 120, smoke=True, extra_epochs=3, schedule='plateau')
+            trainer.run(first, time.time() + 120, smoke=True, extra_epochs=3, schedule='plateau', class_weights=class_weights,
+                        data_dir='input/split95-seed45' if class_weights else None)
             a = original_load(first / 'last.pth', map_location='cpu', weights_only=False)
             self.assertEqual(a['scheduler']['last_epoch'], 3)
             self.assertAlmostEqual(a['optimizer']['param_groups'][0]['lr'], .00005)
@@ -81,6 +88,10 @@ class AdaptiveLRTest(unittest.TestCase):
             self.assertEqual(b['scheduler']['num_bad_epochs'], 1)
             self.assertEqual(b['optimizer']['param_groups'][0]['lr'], a['optimizer']['param_groups'][0]['lr'])
             self.assertTrue(all(state['step'].item() == 16 for state in b['optimizer']['state'].values()))
+            if class_weights:
+                self.assertEqual((first / 'class_weights.json').read_bytes(), (second / 'class_weights.json').read_bytes())
+                self.assertEqual(a['config']['class_weights_sha256'], b['config']['class_weights_sha256'])
+                self.assertEqual(b['config']['sampling'], 'random permutation')
             config = json.loads((second / 'config.json').read_text())
             optimizer = torch.optim.AdamW([{'params': [nn.Parameter(torch.zeros(1))], 'lr': .0001},
                                            {'params': [nn.Parameter(torch.zeros(1))], 'lr': .001}])
