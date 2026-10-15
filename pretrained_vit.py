@@ -21,10 +21,19 @@ from train import Drawings, make_model, predict as resnet_predict, prepare as dr
 
 
 NAME = 'vit_small_patch16_224.augreg_in21k_ft_in1k'
+EFFICIENTNET = 'efficientnet_b3.ra2_in1k'
 
 
 def make_vit(pretrained=False):
     return timm.create_model(NAME, pretrained=pretrained, in_chans=1, num_classes=345).cuda()
+
+
+def make_network(name, pretrained=False):
+    if name == NAME:
+        return make_vit(pretrained)
+    assert name == EFFICIENTNET
+    return timm.create_model(name, pretrained=pretrained, num_classes=345,
+                             drop_rate=0.2, drop_path_rate=0.1).cuda().to(memory_format=torch.channels_last)
 
 
 def setup(smoke=False):
@@ -44,9 +53,15 @@ def setup(smoke=False):
     return arrays, loaders
 
 
-def prepare(images, augment=False):
+def prepare(images, augment=False, config=None):
     images = drawing_prepare(images, augment=augment).neg()
-    return F.interpolate(images, size=(224, 224), mode='bicubic', align_corners=False).clamp_(-1, 1)
+    images = F.interpolate(images, size=(224, 224), mode='bicubic', align_corners=False).clamp_(-1, 1)
+    if config and config['architecture'] == 'efficientnet_b3':
+        images = images.add_(1).mul_(0.5).expand(-1, 3, -1, -1)
+        mean = images.new_tensor(config['mean']).view(1, 3, 1, 1)
+        std = images.new_tensor(config['std']).view(1, 3, 1, 1)
+        images = ((images - mean) / std).contiguous(memory_format=torch.channels_last)
+    return images
 
 
 @torch.inference_mode()
@@ -54,7 +69,7 @@ def predict(model, loader, flip=False):
     model.eval()
     probabilities = []
     for batch in loader:
-        images = prepare(batch[0] if isinstance(batch, (tuple, list)) else batch)
+        images = prepare(batch[0] if isinstance(batch, (tuple, list)) else batch, config=model.pretrained_cfg)
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             logits = model(images)
             mirrored = model(images.flip(-1)) if flip else None
@@ -65,7 +80,7 @@ def predict(model, loader, flip=False):
     return np.concatenate(probabilities)
 
 
-def run(output, deadline, smoke=False, resume=None):
+def run(output, deadline, smoke=False, resume=None, model_name=NAME):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     assert not (output / 'config.json').exists(), 'Укажите новую папку для запуска'
@@ -73,17 +88,24 @@ def run(output, deadline, smoke=False, resume=None):
     set_seed(45)
     source = Path(resume) if resume else None
     if source and source.is_dir():
-        source = source / ('last.pth' if (source / 'last.pth').exists() else 'vit.pth')
+        parent = json.loads((source / 'config.json').read_text())
+        filename = 'model.pth' if parent['model'] == EFFICIENTNET else 'vit.pth'
+        source = source / ('last.pth' if (source / 'last.pth').exists() else filename)
     saved = torch.load(source, map_location='cpu', weights_only=False) if source else None
     full_resume = saved is not None and 'optimizer' in saved
     parent = json.loads((source.parent / 'config.json').read_text()) if source else {}
     assert not source or parent['smoke'] == smoke, 'Проверочный checkpoint нельзя использовать для полного запуска'
-    model = make_vit(pretrained=not bool(source))
+    model_name = parent.get('model', model_name)
+    efficientnet = model_name == EFFICIENTNET
+    filename = 'model.pth' if efficientnet else 'vit.pth'
+    family = 'efficientnet_b3' if efficientnet else 'vit'
+    model = make_network(model_name, pretrained=not bool(source))
     if source:
         model.load_state_dict(saved['model'] if full_resume else saved)
-    config = {'model': NAME, 'pretrained': True, 'pretrained_config': model.pretrained_cfg,
-              'input': 224, 'patch': 16, 'channels': 1, 'inverted': True,
-              'resize': 'bicubic, align_corners=False, clamp [-1,1]', 'normalization': [0.5, 0.5],
+    config = {'model': model_name, 'pretrained': True, 'pretrained_config': model.pretrained_cfg,
+              'input': 224, 'patch': None if efficientnet else 16, 'channels': 3 if efficientnet else 1, 'inverted': True,
+              'resize': 'bicubic, align_corners=False, clamp [-1,1]',
+              'normalization': {'mean': model.pretrained_cfg['mean'], 'std': model.pretrained_cfg['std']},
               'parameters': sum(p.numel() for p in model.parameters()), 'batch_size': 64,
               'optimizer': 'AdamW', 'lr': 0.00003 if source else 0.0001,
               'head_lr': 0.0003 if source else 0.001, 'weight_decay': 0.01,
@@ -91,6 +113,8 @@ def run(output, deadline, smoke=False, resume=None):
               'seed': 45, 'deadline_unix': deadline, 'smoke': smoke,
               'train_examples': len(arrays['train_images']), 'val_examples': len(arrays['val_labels']),
               'torch': torch.__version__, 'timm': timm.__version__, 'gpu': torch.cuda.get_device_name(0)}
+    if efficientnet:
+        config.update(drop_rate=0.2, drop_path_rate=0.1)
     if source:
         with source.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -99,9 +123,10 @@ def run(output, deadline, smoke=False, resume=None):
     (output / 'source.py').write_text(Path(__file__).read_text())
     (output / 'train_source.py').write_text(Path('train.py').read_text())
     print(json.dumps(config), flush=True)
+    head_name = 'classifier' if efficientnet else 'head'
     optimizer = torch.optim.AdamW([
-        {'params': [p for n, p in model.named_parameters() if not n.startswith('head.')], 'scale': 1},
-        {'params': model.head.parameters(), 'scale': 10, 'lr': config['head_lr']}], lr=config['lr'], weight_decay=0.01)
+        {'params': [p for n, p in model.named_parameters() if not n.startswith(head_name + '.')], 'scale': 1},
+        {'params': getattr(model, head_name).parameters(), 'scale': 10, 'lr': config['head_lr']}], lr=config['lr'], weight_decay=0.01)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     ema = ModelEmaV3(model, decay=0.99)
     history, best, steps = [], -1.0, 0
@@ -109,7 +134,7 @@ def run(output, deadline, smoke=False, resume=None):
     if source:
         best_info = json.loads((source.parent / 'best.json').read_text())
         best = best_info['accuracy']
-        shutil.copy2(source.parent / 'vit.pth', output / 'vit.pth')
+        shutil.copy2(source.parent / filename, output / filename)
         shutil.copy2(source.parent / 'best.json', output / 'best.json')
         if full_resume:
             optimizer.load_state_dict(saved['optimizer'])
@@ -183,7 +208,7 @@ def run(output, deadline, smoke=False, resume=None):
             lr *= min(1, local_steps / warmup) if warmup else 1
             for group in optimizer.param_groups:
                 group['lr'] = lr * group['scale']
-            images = prepare(images, augment=True)
+            images = prepare(images, augment=True, config=model.pretrained_cfg)
             targets = targets.cuda(non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
@@ -215,8 +240,8 @@ def run(output, deadline, smoke=False, resume=None):
         for state, candidate, score in [('raw', model, raw), ('ema', ema.module, averaged)]:
             if score > best:
                 best = score
-                torch.save(candidate.state_dict(), output / 'vit.tmp')
-                (output / 'vit.tmp').replace(output / 'vit.pth')
+                torch.save(candidate.state_dict(), output / 'best.tmp')
+                (output / 'best.tmp').replace(output / filename)
                 (output / 'best.json').write_text(json.dumps({'epoch': epoch, 'state': state, 'accuracy': score}, indent=2))
         print(json.dumps(row), flush=True)
         if epoch == start_epoch and not smoke:
@@ -226,16 +251,16 @@ def run(output, deadline, smoke=False, resume=None):
         checkpoint(epoch, batch, (loss_sum, correct, count))
     assert history, 'Time limit expired before training'
     del optimizer, ema
-    model.load_state_dict(torch.load(output / 'vit.pth', map_location='cpu', weights_only=True))
+    model.load_state_dict(torch.load(output / filename, map_location='cpu', weights_only=True))
     scores = []
     for flip in (False, True):
         probabilities = predict(model, loaders['val'], flip=flip)
         np.save(output / ('val_flip.npy' if flip else 'val_plain.npy'), probabilities)
         correct = int((probabilities.argmax(1) == arrays['val_labels']).sum())
-        scores.append({'model': 'vit_flip' if flip else 'vit', 'correct': correct,
+        scores.append({'model': family + '_flip' if flip else family, 'correct': correct,
                        'accuracy': correct / len(arrays['val_labels'])})
     selected = max(scores, key=lambda row: row['accuracy'])
-    flip = selected['model'] == 'vit_flip'
+    flip = selected['model'].endswith('_flip')
     test = predict(model, loaders['test'], flip=flip).argmax(1)
     pd.DataFrame({'id': np.arange(len(test)), 'label': test}).to_csv(output / 'submission.csv', index=False)
     del model
@@ -260,8 +285,9 @@ def verify(output):
     config = json.loads((output / 'config.json').read_text())
     summary = json.loads((output / 'summary.json').read_text())
     arrays, loaders = setup(config['smoke'])
-    model = make_vit()
-    model.load_state_dict(torch.load(output / 'vit.pth', map_location='cpu', weights_only=True))
+    model = make_network(config['model'])
+    filename = 'model.pth' if config['model'] == EFFICIENTNET else 'vit.pth'
+    model.load_state_dict(torch.load(output / filename, map_location='cpu', weights_only=True))
     val = predict(model, loaders['val'], summary['flip']).argmax(1)
     test = predict(model, loaders['test'], summary['flip']).argmax(1)
     submission = pd.read_csv(output / 'submission.csv')
@@ -284,8 +310,9 @@ if __name__ == '__main__':
     parser.add_argument('--smoke', action='store_true')
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--resume')
+    parser.add_argument('--model', choices=[NAME, EFFICIENTNET], default=NAME)
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
     else:
-        run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200), args.smoke, args.resume)
+        run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200), args.smoke, args.resume, args.model)

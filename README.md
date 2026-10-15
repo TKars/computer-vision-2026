@@ -228,3 +228,21 @@ AdamW: lr=0.0001 для backbone и 0.001 для новой головы, weight
 На сохранённой EMA эпохи 6 проверены те же 103500 val-примеров. Без TTA: 78549 верных, accuracy 0.75892754. Усреднение вероятностей original/flip: 78760 верных, accuracy 0.76096618. Прирост — 211 верных ответов, 0.204 процентного пункта. До val-порога строго выше 0.76102 не хватает 6 верных ответов.
 
 Копия весов, обе матрицы вероятностей, `scores.csv`, `summary.json` и конфигурация сохранены в `output/pretrained-tta-20261015-0926/snapshot`. Результат относится к этому checkpoint, последующее обучение может выбрать другие веса.
+
+## EfficientNet-B3
+
+ViT остановлен по запросу пользователя после 9 полных эпох. Последняя точка продолжения — `output/pretrained-vit-resume-20261015/last.pth`, эпоха 10, батч 1. Оптимайзер, EMA и генераторы случайных чисел сохранены; копия checkpoint перенесена на Mac, SHA256 совпадает. Лучшие веса ViT остаются EMA эпохи 6.
+
+Общий цикл `pretrained_vit.py` также поддерживает `efficientnet_b3.ra2_in1k`: веса ImageNet-1k, новая голова на 345 классов, 11226497 параметров. Для сравнения с ViT используется вход 224×224. Чёрные линии на белом фоне повторяются в трёх RGB-каналах и нормализуются штатными mean/std ImageNet. Модель использует channels last, dropout=0.2 и DropPath=0.1.
+
+```bash
+.venv/bin/python -u pretrained_vit.py --model efficientnet_b3.ra2_in1k --output output/efficientnet-b3-20261015
+.venv/bin/python pretrained_vit.py --verify --output output/efficientnet-b3-20261015
+.venv/bin/jupyter lab efficientnet_results.ipynb
+```
+
+Batch size 64, AdamW: lr=0.0001 для backbone, 0.001 для головы, weight decay=0.01, warmup половину эпохи и cosine schedule. EMA=0.99, label smoothing=0.05, bfloat16 autocast. Данные и аугментации совпадают с ViT. Каждая эпоха проверяется на всех 103500 val, отдельно для текущих весов и EMA; в конце сравниваются обычный inference и flip TTA.
+
+В коротком замере на RTX 4070 Ti batch 64 дал около 645 изображений/с и пик выделенной памяти 5474 MiB. Это замер нескольких шагов с аугментациями и оптимайзером; он не заменяет длительность полной эпохи с val. Batch 128 оказался медленнее и расходовал почти всю VRAM, поэтому выбран 64.
+
+Полное состояние сохраняется каждую минуту в `last.pth`, лучшие веса — в `model.pth`. Результаты и архив EfficientNet хранятся отдельно; предыдущие результаты ViT и ResNet сохраняются.
