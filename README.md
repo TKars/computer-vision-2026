@@ -395,3 +395,22 @@ Batch size 64, AdamW: lr=0.0001 для backbone, 0.001 для головы, weig
 .venv/bin/python blend_pair95.py --vit output/similar-tta-check --output output/similar-pair-check
 .venv/bin/python blend_pair95.py --output output/similar-pair-check --verify
 ```
+
+## Два ViT + EfficientNet на val 95/5
+
+На тех же 34500 val объединены те же три checkpoint: обычный ViT EMA6, ViT с похожими классами EMA4 и EfficientNet-B3 EMA6. Использованы сохранённые вероятности, расчёт только на CPU, обучение нового ViT продолжалось.
+
+| Вариант | Без TTA | Flip TTA |
+| --- | ---: | ---: |
+| Обычный ViT + EfficientNet | 77.5855% | 77.6145% |
+| ViT с похожими классами + EfficientNet | 76.8493% | 77.0087% |
+| Оба ViT + EfficientNet | 77.6551% | 77.7043% |
+
+Лучшие веса для обоих режимов: обычный ViT 35%, ViT с похожими классами 15%, EfficientNet 50%; температура каждой модели 4. Plain 26791/34500, flip 26808/34500. Добавление второго ViT к лучшей паре дало 24 верных ответа без TTA и 31 с flip (+0.0899 п.п. с flip). Равные доли трёх моделей при T=1 дали flip 26732/34500 = 77.4841%; при T=4 — 26759/34500 = 77.5623%.
+
+Проверены все неотрицательные веса с суммой 1 и шагом 0.05, плюс равные доли, общая температура 1/2/4 и plain/flip: 1392 рецепта. Нулевые веса включены. Все 126 рецептов каждой из двух прежних пар повторены на соответствующих границах без различий в accuracy. Отдельный процесс восстановил лучший рецепт из JSON: все 34500 предсказаний совпали, SHA256 входов проверены. Папка результата — `output/two-vit-efficientnet-95-20261015`. Веса подобраны на этом же val; небольшой прирост требует отдельной проверки, test/Kaggle для тройки не запускались.
+
+```bash
+.venv/bin/python blend_pair95.py --similar-vit output/vit-similar-tta95-20261015 --output output/triple95-check
+.venv/bin/python blend_pair95.py --output output/triple95-check --verify
+```
