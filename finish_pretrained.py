@@ -1,10 +1,13 @@
 import json
+import argparse
 from pathlib import Path
 
 import pandas as pd
 
 
-output = Path('output/pretrained-vit-20261015')
+parser = argparse.ArgumentParser()
+parser.add_argument('--output', default='output/pretrained-vit-20261015')
+output = Path(parser.parse_args().output)
 verification = json.loads((output / 'verification.json').read_text())
 summary = json.loads((output / 'summary.json').read_text())
 assert verification['val_examples'] == 103500

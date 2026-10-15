@@ -26,7 +26,7 @@ def pack(best, archive):
     names = {'config.json', 'summary.json', 'verification.json', 'history.csv', 'scores.csv',
              'submission.csv', 'train.log', 'environment.txt', 'source.py', 'train_source.py',
              'resnet18_3.pth', 'resnet18_7.pth', 'finetuned.pth', 'model.pth', 'calibration.csv',
-             'vit.pth', 'best.json'}
+             'vit.pth', 'best.json', 'last.pth', 'checkpoint.json'}
     for folder in folders:
         if (folder / 'summary.json').exists():
             files.extend(p for p in folder.iterdir() if p.name in names)

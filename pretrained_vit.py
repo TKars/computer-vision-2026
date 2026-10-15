@@ -1,6 +1,10 @@
 import argparse
 import json
 import math
+import hashlib
+import os
+import random
+import shutil
 import time
 from pathlib import Path
 
@@ -61,46 +65,122 @@ def predict(model, loader, flip=False):
     return np.concatenate(probabilities)
 
 
-def run(output, deadline, smoke=False):
+def run(output, deadline, smoke=False, resume=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     assert not (output / 'config.json').exists(), 'Укажите новую папку для запуска'
     arrays, loaders = setup(smoke)
     set_seed(45)
-    model = make_vit(pretrained=True)
+    source = Path(resume) if resume else None
+    if source and source.is_dir():
+        source = source / ('last.pth' if (source / 'last.pth').exists() else 'vit.pth')
+    saved = torch.load(source, map_location='cpu', weights_only=False) if source else None
+    full_resume = saved is not None and 'optimizer' in saved
+    parent = json.loads((source.parent / 'config.json').read_text()) if source else {}
+    assert not source or parent['smoke'] == smoke, 'Проверочный checkpoint нельзя использовать для полного запуска'
+    model = make_vit(pretrained=not bool(source))
+    if source:
+        model.load_state_dict(saved['model'] if full_resume else saved)
     config = {'model': NAME, 'pretrained': True, 'pretrained_config': model.pretrained_cfg,
               'input': 224, 'patch': 16, 'channels': 1, 'inverted': True,
               'resize': 'bicubic, align_corners=False, clamp [-1,1]', 'normalization': [0.5, 0.5],
               'parameters': sum(p.numel() for p in model.parameters()), 'batch_size': 64,
-              'optimizer': 'AdamW', 'lr': 0.0001, 'head_lr': 0.001, 'weight_decay': 0.01,
+              'optimizer': 'AdamW', 'lr': 0.00003 if source else 0.0001,
+              'head_lr': 0.0003 if source else 0.001, 'weight_decay': 0.01,
               'label_smoothing': 0.05, 'ema_decay': 0.99, 'precision': 'bfloat16 autocast',
               'seed': 45, 'deadline_unix': deadline, 'smoke': smoke,
               'train_examples': len(arrays['train_images']), 'val_examples': len(arrays['val_labels']),
               'torch': torch.__version__, 'timm': timm.__version__, 'gpu': torch.cuda.get_device_name(0)}
+    if source:
+        with source.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        config.update(resume=str(source), resume_sha256=digest, optimizer_restored=full_resume)
     (output / 'config.json').write_text(json.dumps(config, indent=2))
     (output / 'source.py').write_text(Path(__file__).read_text())
     (output / 'train_source.py').write_text(Path('train.py').read_text())
     print(json.dumps(config), flush=True)
     optimizer = torch.optim.AdamW([
         {'params': [p for n, p in model.named_parameters() if not n.startswith('head.')], 'scale': 1},
-        {'params': model.head.parameters(), 'scale': 10}], lr=0.0001, weight_decay=0.01)
+        {'params': model.head.parameters(), 'scale': 10, 'lr': config['head_lr']}], lr=config['lr'], weight_decay=0.01)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     ema = ModelEmaV3(model, decay=0.99)
     history, best, steps = [], -1.0, 0
+    start_epoch, start_batch, metrics = 1, 0, (0.0, 0, 0)
+    if source:
+        best_info = json.loads((source.parent / 'best.json').read_text())
+        best = best_info['accuracy']
+        shutil.copy2(source.parent / 'vit.pth', output / 'vit.pth')
+        shutil.copy2(source.parent / 'best.json', output / 'best.json')
+        if full_resume:
+            optimizer.load_state_dict(saved['optimizer'])
+            ema.module.load_state_dict(saved['ema'])
+            history, steps = saved['history'], saved['steps']
+            start_epoch, start_batch, metrics = saved['epoch'], saved['batch'], saved['metrics']
+            if start_batch == len(loaders['train']):
+                start_epoch, start_batch, metrics = start_epoch + 1, 0, (0.0, 0, 0)
+            else:
+                history = [row for row in history if row['epoch'] < start_epoch]
+            random.setstate(saved['python_rng'])
+            np.random.set_state(saved['numpy_rng'])
+            torch.set_rng_state(saved['torch_rng'])
+            torch.cuda.set_rng_state_all(saved['cuda_rng'])
+            config['lr'] = optimizer.param_groups[0]['lr']
+            config['head_lr'] = optimizer.param_groups[1]['lr']
+        else:
+            previous = pd.read_csv(source.parent / 'history.csv')
+            history = previous[previous['epoch'] <= best_info['epoch']].to_dict('records')
+            start_epoch = best_info['epoch'] + 1
+            steps = best_info['epoch'] * len(loaders['train'])
+            initial = float((predict(model, loaders['val']).argmax(1) == arrays['val_labels']).mean())
+            assert abs(initial - best) < 1e-7, (initial, best)
+            config['initial_accuracy'] = initial
+        pd.DataFrame(history).to_csv(output / 'history.csv', index=False)
+        config.update(start_epoch=start_epoch, start_batch=start_batch)
+        (output / 'config.json').write_text(json.dumps(config, indent=2))
+        print(json.dumps({'resumed_epoch': start_epoch, 'resumed_batch': start_batch,
+                          'optimizer_restored': full_resume, 'best_accuracy': best}), flush=True)
+    del saved
+    base_epoch, base_steps = start_epoch, steps
     epochs = 1 if smoke else 10
+    epochs += start_epoch - 1
     training_deadline = deadline - (5 if smoke else 900)
     training_start = time.time()
-    warmup = max(1, len(loaders['train']) // 2)
-    for epoch in range(1, 101):
+    warmup = 0 if full_resume else max(1, len(loaders['train']) // 2)
+    checkpoint_time = time.monotonic()
+
+    def checkpoint(epoch, batch, metrics):
+        state = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
+                 'ema': ema.module.state_dict(), 'epoch': epoch, 'batch': batch,
+                 'steps': steps, 'metrics': metrics, 'history': history, 'config': config,
+                 'python_rng': random.getstate(), 'numpy_rng': np.random.get_state(),
+                 'torch_rng': torch.get_rng_state(), 'cuda_rng': torch.cuda.get_rng_state_all()}
+        with (output / 'last.tmp').open('wb') as stream:
+            torch.save(state, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        (output / 'last.tmp').replace(output / 'last.pth')
+        (output / 'checkpoint.json').write_text(json.dumps({'epoch': epoch, 'batch': batch,
+                                                           'steps': steps, 'saved_at': time.time()}))
+
+    checkpoint(start_epoch, start_batch, metrics)
+    for epoch in range(start_epoch, start_epoch + 100):
         if epoch > epochs or time.time() >= training_deadline:
             break
         start = time.time()
         model.train()
-        loss_sum, correct, count = 0.0, 0, 0
-        for images, targets in loaders['train']:
+        loss_sum, correct, count = metrics if epoch == start_epoch else (0.0, 0, 0)
+        skipped = start_batch if epoch == start_epoch else 0
+        generator = torch.Generator().manual_seed(45 + epoch)
+        order = torch.randperm(len(arrays['train_images']), generator=generator).tolist()[skipped * 64:]
+        loader = DataLoader(loaders['train'].dataset, batch_size=64, sampler=order,
+                            num_workers=4, persistent_workers=True, pin_memory=True,
+                            generator=generator)
+        for batch, (images, targets) in enumerate(loader, skipped + 1):
             steps += 1
-            progress = max(0, min(1, (steps - warmup) / max(1, epochs * len(loaders['train']) - warmup)))
-            lr = (1e-6 + 0.5 * (0.0001 - 1e-6) * (1 + math.cos(math.pi * progress))) * min(1, steps / warmup)
+            local_steps = steps - base_steps
+            progress = max(0, min(1, (local_steps - warmup) / max(1, (epochs - base_epoch + 1) * len(loaders['train']) - warmup)))
+            lr = (1e-6 + 0.5 * (config['lr'] - 1e-6) * (1 + math.cos(math.pi * progress)))
+            lr *= min(1, local_steps / warmup) if warmup else 1
             for group in optimizer.param_groups:
                 group['lr'] = lr * group['scale']
             images = prepare(images, augment=True)
@@ -117,8 +197,11 @@ def run(output, deadline, smoke=False):
             loss_sum += loss.item() * len(targets)
             correct += (logits.detach().argmax(1) == targets).sum().item()
             count += len(targets)
-            if steps == 1:
+            if local_steps == 1:
                 print(json.dumps({'first_batch_loss': loss.item(), 'examples': count}), flush=True)
+            if time.monotonic() - checkpoint_time >= 60:
+                checkpoint(epoch, batch, (loss_sum, correct, count))
+                checkpoint_time = time.monotonic()
             if time.time() >= training_deadline:
                 break
         raw = float((predict(model, loaders['val']).argmax(1) == arrays['val_labels']).mean())
@@ -136,10 +219,11 @@ def run(output, deadline, smoke=False):
                 (output / 'vit.tmp').replace(output / 'vit.pth')
                 (output / 'best.json').write_text(json.dumps({'epoch': epoch, 'state': state, 'accuracy': score}, indent=2))
         print(json.dumps(row), flush=True)
-        if epoch == 1 and not smoke:
-            epochs = max(1, min(100, int((training_deadline - training_start) / row['seconds'])))
+        if epoch == start_epoch and not smoke:
+            epochs = start_epoch - 1 + max(1, min(100, int((training_deadline - training_start) / row['seconds'])))
             config['estimated_epochs'] = epochs
             (output / 'config.json').write_text(json.dumps(config, indent=2))
+        checkpoint(epoch, batch, (loss_sum, correct, count))
     assert history, 'Time limit expired before training'
     del optimizer, ema
     model.load_state_dict(torch.load(output / 'vit.pth', map_location='cpu', weights_only=True))
@@ -199,8 +283,9 @@ if __name__ == '__main__':
     parser.add_argument('--deadline', type=float)
     parser.add_argument('--smoke', action='store_true')
     parser.add_argument('--verify', action='store_true')
+    parser.add_argument('--resume')
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
     else:
-        run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200), args.smoke)
+        run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200), args.smoke, args.resume)
