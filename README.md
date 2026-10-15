@@ -385,3 +385,13 @@ Batch size 64, AdamW: lr=0.0001 для backbone, 0.001 для головы, weig
 .venv/bin/python blend_pair95.py --output output/pair95-check
 .venv/bin/python blend_pair95.py --output output/pair95-check --verify
 ```
+
+Для ViT с похожими классами отдельно зафиксирован лучший доступный checkpoint — EMA эпохи 4 (обучение продолжалось). На тех же 34500 val его одиночная accuracy: 25710/34500 = 74.5217% plain, 25846/34500 = 74.9159% flip. Повторный plain inference точно совпал с accuracy сохранённого checkpoint. После такого же перебора 126 рецептов пара с EfficientNet дала 26513/34500 = 76.8493% plain (40/60, T=4) и 26568/34500 = 77.0087% flip (30/70, T=4). Это на 261 ответ лучше EfficientNet с flip, но на 209 ответов хуже пары с обычным ViT. Разница по стадиям обучения: checkpoint похожих классов с эпохи 4, обычный baseline с эпохи 6; окончательного вывода о sampler нет.
+
+Замороженные веса и вероятности: `output/vit-similar-tta95-20261015`. Рецепты, все оценки и проверка: `output/vit-similar-efficientnet-pair95-20261015`. Отдельный процесс подтвердил SHA256, порядок val и нулевое расхождение всех 34500 сохранённых предсказаний. Валидация использовала не более четверти VRAM; исходный trainer PID 76975 остался активен и продвинулся с batch 3974 до 5779 эпохи 5. Подбор весов выполнен на этом val; test и Kaggle для пары не проверялись.
+
+```bash
+.venv/bin/python vit_tta.py --parent output/pretrained-vit-similar-95-20261015 --output output/similar-tta-check
+.venv/bin/python blend_pair95.py --vit output/similar-tta-check --output output/similar-pair-check
+.venv/bin/python blend_pair95.py --output output/similar-pair-check --verify
+```

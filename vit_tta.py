@@ -1,5 +1,6 @@
 import argparse
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -32,13 +33,20 @@ def run(parent, output):
     else:
         raise RuntimeError('Checkpoint is being updated')
     torch.save(state, output / 'vit.pth')
+    del state
     best = json.loads(metadata)
     (output / 'best.json').write_bytes(metadata)
     (output / 'config.json').write_text(json.dumps(config, indent=2))
-    arrays, loaders = setup()
-    assert len(arrays['val_labels']) == 103500
+    data_dir = Path(config.get('data_dir', 'input'))
+    arrays, loaders = setup(data_dir=data_dir) if config.get('pretrained') else setup()
+    assert len(arrays['val_labels']) == config.get('val_examples', 103500)
+    for name in ('val_indices.npy', 'manifest.json'):
+        if (data_dir / name).exists():
+            shutil.copy2(data_dir / name, output / name)
+    torch.set_num_threads(2)
+    torch.cuda.set_per_process_memory_fraction(0.25)
     model = make_vit()
-    model.load_state_dict(state)
+    model.load_state_dict(torch.load(output / 'vit.pth', map_location='cpu', weights_only=True))
     scores = []
     for flip in (False, True):
         probs = predict(model, loaders['val'], flip=flip)
@@ -49,7 +57,7 @@ def run(parent, output):
         print(json.dumps(scores[-1]), flush=True)
     pd.DataFrame(scores).to_csv(output / 'scores.csv', index=False)
     assert abs(scores[0]['accuracy'] - best['accuracy']) <= 1e-4
-    summary = {'source': str(parent), 'snapshot': best, 'val_examples': 103500,
+    summary = {'source': str(parent), 'snapshot': best, 'val_examples': len(arrays['val_labels']),
                'scores': scores, 'delta_flip': scores[1]['accuracy'] - scores[0]['accuracy']}
     (output / 'summary.json').write_text(json.dumps(summary, indent=2))
     (output / 'source.py').write_text(Path(__file__).read_text())
