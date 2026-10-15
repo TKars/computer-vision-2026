@@ -80,7 +80,9 @@ def predict(model, loader, flip=False):
     return np.concatenate(probabilities)
 
 
-def run(output, deadline, smoke=False, resume=None, model_name=NAME):
+def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=None, extra_epochs=None):
+    assert resume_lr is None or (resume and resume_lr > 0)
+    assert extra_epochs is None or extra_epochs > 0
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     assert not (output / 'config.json').exists(), 'Укажите новую папку для запуска'
@@ -159,6 +161,11 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME):
             initial = float((predict(model, loaders['val']).argmax(1) == arrays['val_labels']).mean())
             assert abs(initial - best) < 1e-7, (initial, best)
             config['initial_accuracy'] = initial
+        if resume_lr is not None:
+            config['lr'], config['head_lr'] = resume_lr, resume_lr * 10
+            config['resume_lr'] = resume_lr
+            for group in optimizer.param_groups:
+                group['lr'] = resume_lr * group['scale']
         pd.DataFrame(history).to_csv(output / 'history.csv', index=False)
         config.update(start_epoch=start_epoch, start_batch=start_batch)
         (output / 'config.json').write_text(json.dumps(config, indent=2))
@@ -166,8 +173,11 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME):
                           'optimizer_restored': full_resume, 'best_accuracy': best}), flush=True)
     del saved
     base_epoch, base_steps = start_epoch, steps
-    epochs = 1 if smoke else 10
+    epochs = extra_epochs if extra_epochs is not None else (1 if smoke else 10)
     epochs += start_epoch - 1
+    if extra_epochs is not None:
+        config['estimated_epochs'] = epochs
+        (output / 'config.json').write_text(json.dumps(config, indent=2))
     training_deadline = deadline - (5 if smoke else 900)
     training_start = time.time()
     warmup = 0 if full_resume else max(1, len(loaders['train']) // 2)
@@ -244,7 +254,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME):
                 (output / 'best.tmp').replace(output / filename)
                 (output / 'best.json').write_text(json.dumps({'epoch': epoch, 'state': state, 'accuracy': score}, indent=2))
         print(json.dumps(row), flush=True)
-        if epoch == start_epoch and not smoke:
+        if epoch == start_epoch and not smoke and extra_epochs is None:
             epochs = start_epoch - 1 + max(1, min(100, int((training_deadline - training_start) / row['seconds'])))
             config['estimated_epochs'] = epochs
             (output / 'config.json').write_text(json.dumps(config, indent=2))
@@ -310,9 +320,12 @@ if __name__ == '__main__':
     parser.add_argument('--smoke', action='store_true')
     parser.add_argument('--verify', action='store_true')
     parser.add_argument('--resume')
+    parser.add_argument('--resume-lr', type=float)
+    parser.add_argument('--epochs', type=int)
     parser.add_argument('--model', choices=[NAME, EFFICIENTNET], default=NAME)
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
     else:
-        run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200), args.smoke, args.resume, args.model)
+        run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200),
+            args.smoke, args.resume, args.model, args.resume_lr, args.epochs)

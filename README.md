@@ -247,6 +247,17 @@ Batch size 64, AdamW: lr=0.0001 для backbone, 0.001 для головы, weig
 
 Полное состояние сохраняется каждую минуту в `last.pth`, лучшие веса — в `model.pth`. Результаты и архив EfficientNet хранятся отдельно; предыдущие результаты ViT и ResNet сохраняются.
 
+Первый запуск завершил 5 эпох. Лучший checkpoint — EMA эпохи 5: 78433/103500 (0.75780676) без TTA и 78654/103500 (0.75994203) с flip TTA. Отдельная проверка повторила полный val/test: accuracy совпала, все 172500 предсказаний submission совпали. Выполненный ноутбук — `efficientnet_results.ipynb`, результаты — `output/efficientnet-b3-20261015`.
+
+Продолжение сохраняет AdamW, EMA и историю из `last.pth`. После завершившегося cosine schedule learning rate задаётся заново: 0.00001 для backbone и 0.0001 для головы с уменьшением за три дополнительные эпохи. Данные, вход и аугментации остаются прежними.
+
+```bash
+.venv/bin/python -u pretrained_vit.py --resume output/efficientnet-b3-20261015 --output output/efficientnet-b3-resume-20261015 --resume-lr 0.00001 --epochs 3
+.venv/bin/python pretrained_vit.py --verify --output output/efficientnet-b3-resume-20261015
+```
+
+`--epochs` ограничивает число дополнительных эпох, `--deadline` сохраняет общий лимит времени. По умолчанию learning rate полного resume берётся из оптимизатора; `--resume-lr` явно начинает новый cosine schedule, сохраняя накопленные состояния AdamW. Новый запуск и архив не перезаписывают первый результат.
+
 ## ViT и другие модели на val
 
 На тех же 103500 val проверено усреднение вероятностей с подобранными весами и температурами. ResNet-предсказания пересчитаны, для ViT взяты отдельные сохранённые checkpoints. EfficientNet продолжал обучение; в этот ансамбль он не входит.
