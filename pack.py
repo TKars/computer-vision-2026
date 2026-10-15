@@ -21,6 +21,8 @@ def pack(best, archive):
     if best.name.startswith('efficientnet-'):
         notebook = 'efficientnet_resume_results.ipynb' if 'resume' in best.name else 'efficientnet_results.ipynb'
         files.extend([Path('pretrained_vit.py'), Path('finish_pretrained.py'), Path(notebook)])
+    if Path('pretrained_vit.py') in files:
+        files.append(Path('similar_batches.py'))
     files.append(Path('input/baseline.pth'))
     folders = [Path('output') / name for name in ['run-20261014', 'resize56-20261014',
                                                'regularized-20261014', 'regularized-fixed-20261014', 'ensemble-20261014']]
@@ -29,7 +31,7 @@ def pack(best, archive):
     names = {'config.json', 'summary.json', 'verification.json', 'history.csv', 'scores.csv',
              'submission.csv', 'train.log', 'environment.txt', 'source.py', 'train_source.py',
              'resnet18_3.pth', 'resnet18_7.pth', 'finetuned.pth', 'model.pth', 'calibration.csv',
-             'vit.pth', 'best.json', 'last.pth', 'checkpoint.json'}
+             'vit.pth', 'best.json', 'last.pth', 'checkpoint.json', 'sampler_source.py', 'similar_pairs.json'}
     for folder in folders:
         if (folder / 'summary.json').exists():
             files.extend(p for p in folder.iterdir() if p.name in names)

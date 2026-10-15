@@ -18,6 +18,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from train import Drawings, make_model, predict as resnet_predict, prepare as drawing_prepare, set_seed
+from similar_batches import training_loader
 
 
 NAME = 'vit_small_patch16_224.augreg_in21k_ft_in1k'
@@ -80,7 +81,8 @@ def predict(model, loader, flip=False):
     return np.concatenate(probabilities)
 
 
-def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=None, extra_epochs=None, data_dir=None):
+def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=None, extra_epochs=None, data_dir=None,
+        similar_pairs=None):
     assert resume_lr is None or (resume and resume_lr > 0)
     assert extra_epochs is None or extra_epochs > 0
     output = Path(output)
@@ -101,6 +103,19 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
     if source:
         assert data_dir == parent.get('data_dir', 'input'), 'Разбивка checkpoint отличается'
         assert split_sha256 == parent.get('split_sha256'), 'Индексы разбивки изменились'
+    pair_file = Path(similar_pairs) if similar_pairs else (
+        source.parent / 'similar_pairs.json' if parent.get('similar_pairs_sha256') else None)
+    pair_text = pair_file.read_text() if pair_file else None
+    pair_sha256 = hashlib.sha256(pair_text.encode()).hexdigest() if pair_text else None
+    if source:
+        assert pair_sha256 == parent.get('similar_pairs_sha256'), 'Для другого sampler начните отдельный pretrained-запуск'
+    pairs = None
+    if pair_text:
+        pair_config = json.loads(pair_text)
+        assert pair_config['split_sha256'] == split_sha256, 'Пары получены на другой разбивке'
+        assert pair_config['classes_sha256'] == hashlib.sha256(Path('input/classes.npy').read_bytes()).hexdigest()
+        pairs = [entry['ids'] for entry in pair_config['pairs']]
+        (output / 'similar_pairs.json').write_text(pair_text)
     arrays, loaders = setup(smoke, data_dir)
     set_seed(45)
     model_name = parent.get('model', model_name)
@@ -120,6 +135,8 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
               'label_smoothing': 0.05, 'ema_decay': 0.99, 'precision': 'bfloat16 autocast',
               'seed': 45, 'deadline_unix': deadline, 'smoke': smoke,
               'data_dir': data_dir, 'split_sha256': split_sha256,
+              'sampling': '48 random + 8/8 similar pair' if pairs else 'random permutation',
+              'similar_pairs_sha256': pair_sha256,
               'train_examples': len(arrays['train_images']), 'val_examples': len(arrays['val_labels']),
               'torch': torch.__version__, 'timm': timm.__version__, 'gpu': torch.cuda.get_device_name(0)}
     if efficientnet:
@@ -131,6 +148,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
     (output / 'config.json').write_text(json.dumps(config, indent=2))
     (output / 'source.py').write_text(Path(__file__).read_text())
     (output / 'train_source.py').write_text(Path('train.py').read_text())
+    (output / 'sampler_source.py').write_text(Path(__file__).with_name('similar_batches.py').read_text())
     print(json.dumps(config), flush=True)
     head_name = 'classifier' if efficientnet else 'head'
     optimizer = torch.optim.AdamW([
@@ -219,11 +237,7 @@ def run(output, deadline, smoke=False, resume=None, model_name=NAME, resume_lr=N
         model.train()
         loss_sum, correct, count = metrics if epoch == start_epoch else (0.0, 0, 0)
         skipped = start_batch if epoch == start_epoch else 0
-        generator = torch.Generator().manual_seed(45 + epoch)
-        order = torch.randperm(len(arrays['train_images']), generator=generator).tolist()[skipped * 64:]
-        loader = DataLoader(loaders['train'].dataset, batch_size=64, sampler=order,
-                            num_workers=4, persistent_workers=True, pin_memory=True,
-                            generator=generator)
+        loader = training_loader(loaders['train'].dataset, arrays['train_labels'], epoch, skipped, pairs)
         progress_time = 0
         write_progress('train', epoch, skipped)
         for batch, (images, targets) in enumerate(loader, skipped + 1):
@@ -353,10 +367,11 @@ if __name__ == '__main__':
     parser.add_argument('--resume-lr', type=float)
     parser.add_argument('--epochs', type=int)
     parser.add_argument('--data-dir')
+    parser.add_argument('--similar-pairs')
     parser.add_argument('--model', choices=[NAME, EFFICIENTNET], default=NAME)
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
     else:
         run(args.output, args.deadline or time.time() + (120 if args.smoke else 7200),
-            args.smoke, args.resume, args.model, args.resume_lr, args.epochs, args.data_dir)
+            args.smoke, args.resume, args.model, args.resume_lr, args.epochs, args.data_dir, args.similar_pairs)
