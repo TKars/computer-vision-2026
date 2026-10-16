@@ -28,7 +28,8 @@ def run(output, reuse_from=None):
     flip = recipe['mode'] == 'flip'
     arrays, loaders = setup(False, 'input/split95-seed45')
     torch.set_num_threads(2)
-    torch.cuda.set_per_process_memory_fraction(.25)
+    if torch.cuda.is_available():
+        torch.cuda.set_per_process_memory_fraction(.25)
     for path, digest in summary['sha256'].items():
         assert sha256(Path(path)) == digest
     paths, weights_sha = {}, {}
@@ -74,6 +75,11 @@ def run(output, reuse_from=None):
     if recipe['convnext_weight'] > 0:
         folder = Path(summary['convnext'])
         path = folder / ('test_flip.npy' if flip else 'test_plain.npy')
+        if reuse and 'convnext' in reuse['probabilities']:
+            path = Path(reuse['probabilities']['convnext'])
+            assert reuse['model_weights_sha256'][str(folder / 'model.pth')] == sha256(folder / 'model.pth')
+            assert sha256(path) == reuse['sha256'][str(path)]
+            print(json.dumps({'model': 'convnext', 'cache_reused': str(path)}), flush=True)
         if not path.exists():
             from convnext import make_model, predict as predict_convnext
 
