@@ -18,7 +18,7 @@ def track(loader, name):
         yield batch
 
 
-def run(output):
+def run(output, reuse_from=None):
     from pretrained_vit import make_network, predict, setup
 
     output = Path(output)
@@ -34,6 +34,15 @@ def run(output):
     paths, weights_sha = {}, {}
     hashes = {str(path): sha256(path) for path in
               (output / 'summary.json', Path('input/test_images.npy'), Path('input/classes.npy'))}
+    reuse = None
+    if reuse_from:
+        path = Path(reuse_from) / 'submission_summary.json'
+        cached = json.loads(path.read_text())
+        if cached['recipe']['mode'] == recipe['mode']:
+            reuse = cached
+            for name in ('input/test_images.npy', 'input/classes.npy'):
+                assert cached['sha256'][name] == hashes[name]
+            hashes[str(path)] = sha256(path)
     models = [('vit', 'vit.pth'), ('efficientnet', 'model.pth')]
     if 'similar_vit' in summary:
         models.append(('similar_vit', 'vit.pth'))
@@ -41,6 +50,15 @@ def run(output):
         if recipe[name + '_weight'] == 0:
             continue
         folder = Path(summary[name])
+        if reuse and name in reuse['probabilities']:
+            path = Path(reuse['probabilities'][name])
+            digest = sha256(folder / filename)
+            assert reuse['model_weights_sha256'][str(folder / filename)] == digest
+            assert sha256(path) == reuse['sha256'][str(path)]
+            paths[name] = str(path)
+            weights_sha[str(folder / filename)] = digest
+            print(json.dumps({'model': name, 'cache_reused': str(path)}), flush=True)
+            continue
         config = json.loads((folder / 'config.json').read_text())
         path = output / f'test_{name}.npy'
         assert not path.exists(), 'Вероятности test уже существуют'
@@ -115,6 +133,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', required=True)
     parser.add_argument('--verify', action='store_true')
+    parser.add_argument('--reuse-from')
     args = parser.parse_args()
     if args.verify: verify(args.output)
-    else: run(args.output)
+    else: run(args.output, args.reuse_from)
