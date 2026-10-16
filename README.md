@@ -492,3 +492,22 @@ GPU-проверка: batch 256 помещается на RTX 4070 Ti, peak allo
 .venv/bin/python blend_pair95.py --convnext output/convnext-snapshot --output output/convnext-snapshot-blend
 .venv/bin/python blend_pair95.py --output output/convnext-snapshot-blend --verify
 ```
+
+### Ансамбль с EMA седьмой эпохи
+
+`convnext_val.py --epoch 7` берёт веса именно из завершённого `epoch-07.pth`. Все182 тензора снимка совпали с EMA checkpoint; raw этой эпохи дал75.2783%, EMA77.5623%. Снимок `output/convnext-tta95-20261016-epoch07`, результат ансамбля `output/convnext-ensemble95-20261016-epoch07`.
+
+| Модели | Режим | Верно / 34500 | Accuracy |
+|---|---|---:|---:|
+| ConvNeXt EMA7 | plain | 26759 | 77.5623% |
+| ConvNeXt EMA7 | flip | 26672 | 77.3101% |
+| ViT + EfficientNet + ConvNeXt EMA7 | plain, T1, 30/25/45% | 27031 | 78.3507% |
+| ViT + EfficientNet + ConvNeXt EMA7 | flip, T2, 25/25/50% | 27021 | 78.3217% |
+
+Лучший результат выше ансамбля с EMA5 на75 ответов/+0.2174п.п. При прежнем рецепте30/30/40%, T4 plain получено27012/34500 =78.2957% (+56 ответов). ViT и EfficientNet остались прежними EMA6. Подбор1392 рецептов выполнен на том же val; отдельный verify и смесь float64 совпали по всем предсказаниям,126 прежних парных рецептов воспроизвелись. Снимок/проверки сохранены на ПК и Mac с совпавшими SHA256. Обучение продолжилось; test/Kaggle этого снимка не проверялись.
+
+```bash
+.venv/bin/python convnext_val.py --parent output/convnext-tiny95-20261016 --epoch 7 --output output/convnext-epoch07-check
+.venv/bin/python blend_pair95.py --convnext output/convnext-epoch07-check --output output/convnext-epoch07-blend
+.venv/bin/python blend_pair95.py --output output/convnext-epoch07-blend --verify
+```
