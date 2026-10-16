@@ -471,3 +471,24 @@ GPU-проверка: batch 256 помещается на RTX 4070 Ti, peak allo
 .venv/bin/python ensemble_submission95.py --output output/convnext-blend
 .venv/bin/python ensemble_submission95.py --output output/convnext-blend --verify
 ```
+
+### Промежуточный ансамбль, EMA эпохи 5
+
+До завершения обучения ConvNeXt сохранён отдельный снимок `output/convnext-tta95-20261016-early`. На тех же34500 val он дал26470 верных ответов без TTA и26439 с flip. Обычный ViT и EfficientNet взяты из завершённых опытов, оба EMA эпохи6.
+
+| Модели | Режим | Верно / 34500 | Accuracy |
+|---|---|---:|---:|
+| ConvNeXt EMA5 | plain | 26470 | 76.7246% |
+| ViT + EfficientNet | flip, T4, 40/60% | 26777 | 77.6145% |
+| ViT + EfficientNet + ConvNeXt | plain, T4, 30/30/40% | 26956 | 78.1333% |
+| ViT + EfficientNet + ConvNeXt | flip, T4, 35/25/40% | 26942 | 78.0928% |
+
+Прирост к паре —179 ответов,0.5188п.п. Простое среднее трёх без TTA и изменения температуры дало26929/34500 =78.0551%. Перебраны1392 рецепта; параметры выбраны на этом же val. Отдельный процесс проверил все предсказания и SHA256; независимая смесь в float64 совпала, все126 прежних парных рецептов воспроизведены без различий.
+
+Рецепт, таблица и проверки находятся в `output/convnext-ensemble95-20261016-early`. Снимок и результаты сохранены на ПК и Mac с совпавшими SHA256. Обучение ConvNeXt продолжилось; это промежуточная оценка, test/Kaggle для неё не запускались.
+
+```bash
+.venv/bin/python convnext_val.py --parent output/convnext-tiny95-20261016 --output output/convnext-snapshot
+.venv/bin/python blend_pair95.py --convnext output/convnext-snapshot --output output/convnext-snapshot-blend
+.venv/bin/python blend_pair95.py --output output/convnext-snapshot-blend --verify
+```
