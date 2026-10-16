@@ -511,3 +511,23 @@ GPU-проверка: batch 256 помещается на RTX 4070 Ti, peak allo
 .venv/bin/python blend_pair95.py --convnext output/convnext-epoch07-check --output output/convnext-epoch07-blend
 .venv/bin/python blend_pair95.py --output output/convnext-epoch07-blend --verify
 ```
+
+### Оба ViT + EfficientNet + ConvNeXt EMA8
+
+Проверены шесть фиксированных смесей, общая температура1/2/4 и plain/flip —36 вариантов на тех же34500 val. Второй ViT теперь взят из лучшего EMA6 sampler-прогона; остальные ViT и EfficientNet — прежние EMA6. ConvNeXt взят именно из epoch-08.pth, совпадение всех182 тензоров проверено. Большой перебор отменён по запросу пользователя, обучение продолжилось.
+
+| Вариант | Верно / 34500 | Accuracy |
+|---|---:|---:|
+| ConvNeXt EMA8 без TTA | 26877 | 77.9043% |
+| Четыре модели поровну, plain/T1 | 27011 | 78.2928% |
+| ViT + EfficientNet + ConvNeXt EMA8, plain/T4 | 27055 | 78.4203% |
+| Оба ViT + EfficientNet + ConvNeXt EMA8, plain/T4 | 27065 | 78.4493% |
+
+Лучший из проверенных рецептов: обычный ViT27%, EfficientNet22.5%, второй ViT10%, ConvNeXt40.5%. В варианте без второго ViT сохранено соотношение30/25/45; добавление второго дало только10 верных ответов (+0.0290п.п.). Это небольшой набор рецептов, не полный поиск оптимума. Настройки выбраны на этом же val.
+
+Результаты и независимые проверки: `output/four-models95-20261016-epoch08`. Источники: `output/convnext-tta95-20261016-epoch08`, `output/vit-similar-tta95-20261016-epoch06-fixed`. Отдельный verify и независимая смесь float64 повторили все предсказания без различий; снимки/результаты сохранены на ПК и Mac с совпавшими SHA256. Test/Kaggle для этого опыта не запускались.
+
+```bash
+.venv/bin/python blend_four95.py --similar-vit output/vit-similar-tta95-20261016-epoch06-fixed --convnext output/convnext-tta95-20261016-epoch08 --output output/four-models-check
+.venv/bin/python blend_four95.py --output output/four-models-check --verify
+```
