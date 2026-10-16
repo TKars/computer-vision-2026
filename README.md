@@ -448,3 +448,26 @@ Batch size 64, AdamW: lr=0.0001 для backbone, 0.001 для головы, weig
 ```bash
 .venv/bin/python -u pretrained_vit.py --data-dir input/split95-seed45 --class-weights class_loss_weights.json --schedule plateau --epochs 10 --output output/weighted-check
 ```
+
+## ConvNeXt Tiny
+
+16 октября начат `output/convnext-tiny95-20261016`. Модель `convnext_tiny.in12k_ft_in1k`, pretrained ImageNet-12k → ImageNet-1k, 28082361 параметр. Из предоставленного ноутбука взяты вход 128×128 с одним каналом, batch 256, 20 эпох, AdamW LR=5e-4/weight decay=0.05, drop path 0.3, mixup alpha=0.2, label smoothing 0.1, OneCycleLR с pct_start=0.1 и EMA до 0.9995 с decay=min(0.9995,(1+steps)/(10+steps)). Аугментации: поворот ±15°, scale 0.9–1.1, сдвиг ±0.1, без случайного отражения. Значения входа нормируются в [-1,1], без инверсии. Используется BF16, без FP16 GradScaler.
+
+Разбивка осталась train 655500 / val 34500. Каждая эпоха проверяет все 34500 val для текущих весов и EMA. Обычная случайная перестановка train, seed=2; все классы имеют одинаковый вес. Train accuracy учитывает mixup и напрямую не сопоставима с прежней train accuracy без mixup. Контроль — завершённый обычный ViT-S/16 EMA6 и EfficientNet-B3 EMA6 на том же val. Предыдущий ViT со взвешенным loss не завершился: остались две полные эпохи, лучший EMA2 73.4116%, checkpoint третьей эпохи; итоговых scores/verification нет. Его повторно не запускали и не использовали вместо законченного ViT.
+
+`convnext.py` сохраняет полный `last.pth` каждую минуту и после эпохи: модель, EMA, AdamW, OneCycle, epoch/batch/steps, метрики и RNG Python/NumPy/Torch/CUDA. Завершённые эпохи имеют отдельные `epoch-NN.pth`, лучшие веса — `model.pth` и `best.json`. При SIGTERM/SIGINT checkpoint сохраняется после текущего батча и процесс возвращает код 2, чтобы очередь не продолжила незавершённое обучение. Resume восстанавливает порядок батчей и расписание, в том числе посреди эпохи.
+
+GPU-проверка: batch 256 помещается на RTX 4070 Ti, peak allocated 5610.8 MiB. После остановки на шаге 1 и продолжения до шага 4 веса модели и EMA побитово совпали с непрерывным обучением; восстановлены все 182 состояния AdamW. Отдельный smoke verify подтвердил совпадение val/test с сохранёнными вероятностями и CSV без различий. Smoke использовал 512 train / 64 val / 64 test и не оценивает качество модели. Два теста ансамбля проверили поиск смеси и сериализованный рецепт на искусственных вероятностях, сборку 172500 синтетических строк и обнаружение изменённой метки CSV. Проверка NotebookClient подтвердила ядро .venv и cwd проекта.
+
+После обучения отдельный процесс проверяет ConvNeXt целиком, затем `blend_pair95.py --convnext` подбирает ансамбль ConvNeXt + ViT + EfficientNet: 1392 комбинации весов с шагом 0.05 (включая нули), равных долей, общей температуры 1/2/4 и plain/flip. Это подбор на том же val, не независимая оценка прироста. `ensemble_submission95.py` считает test-прогнозы нужных ViT/EfficientNet, смешивает с сохранёнными ConvNeXt-прогнозами, пишет CSV и в отдельном процессе проверяет все 172500 строк и SHA256. Файлы ансамбля — `output/convnext-ensemble95-20261016`. На Kaggle автоматически ничего не отправляется. В конце исполняется `convnext_results.ipynb`; сейчас это шаблон без результатов нового обучения.
+
+Запуск: job PID 6568, trainer PID 6571; замороженный код `output/convnext-code-20261016`, job `output/convnext-job-20261016.sh`. Ограничение — 20 эпох, резерв 15 минут до шестичасового deadline; после окончания выполняется проверка и ансамбль. Нового heartbeat и автоматического выключения нет. Реальная первая batch loss=6.2127, GPU99%, около 6408 MiB занято. Первый полный checkpoint epoch1/batch362/steps362 проверен: AdamW182 finite, шаг OneCycle=362. Резервный `launch-backup.pth` скопирован на Mac с совпавшим SHA256 `a7ecbe5a782bae8be64d33e25225c2f4bcc1af484ebe6b19a130ae9bdb09c8dc`. Дашборд localhost59690 переключён на ConvNeXt.
+
+```bash
+.venv/bin/python -u convnext.py --output output/convnext-run --epochs 20 --batch-size 256
+.venv/bin/python convnext.py --output output/convnext-run --verify
+.venv/bin/python blend_pair95.py --convnext output/convnext-run --output output/convnext-blend
+.venv/bin/python blend_pair95.py --output output/convnext-blend --verify
+.venv/bin/python ensemble_submission95.py --output output/convnext-blend
+.venv/bin/python ensemble_submission95.py --output output/convnext-blend --verify
+```

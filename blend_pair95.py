@@ -48,26 +48,29 @@ def inputs(vit, efficientnet, similar_vit=None):
 def combine(probabilities, recipe):
     weights = [recipe['vit_weight'], recipe['efficientnet_weight']]
     if len(probabilities) == 3:
-        weights.append(recipe['similar_vit_weight'])
+        weights.append(recipe['convnext_weight'] if 'convnext_weight' in recipe else recipe['similar_vit_weight'])
     return sum(weight * probs for weight, probs in zip(weights, probabilities))
 
 
-def run(vit, efficientnet, output, similar_vit=None):
-    labels, arrays, hashes = inputs(vit, efficientnet, similar_vit)
+def run(vit, efficientnet, output, similar_vit=None, convnext=None):
+    assert not (similar_vit and convnext)
+    extra = similar_vit or convnext
+    extra_weight = 'convnext_weight' if convnext else 'similar_vit_weight'
+    labels, arrays, hashes = inputs(vit, efficientnet, extra)
     output.mkdir(parents=True, exist_ok=False)
     rows = []
     for mode, pair in arrays.items():
         for temperature in (1, 2, 4):
             probabilities = [temper(probs, temperature) for probs in pair]
             weights = [(step / 20, 1 - step / 20) for step in range(21)]
-            if similar_vit is not None:
+            if extra is not None:
                 weights = [(a / 20, b / 20, (20 - a - b) / 20)
                            for a in range(21) for b in range(21 - a)] + [(1 / 3,) * 3]
             for values in weights:
                 recipe = {'mode': mode, 'temperature': temperature,
                           'vit_weight': values[0], 'efficientnet_weight': values[1]}
-                if similar_vit is not None:
-                    recipe['similar_vit_weight'] = values[2]
+                if extra is not None:
+                    recipe[extra_weight] = values[2]
                 predictions = combine(probabilities, recipe).argmax(1)
                 correct = int((predictions == labels).sum())
                 rows.append({**recipe, 'correct': correct, 'accuracy': correct / len(labels)})
@@ -76,8 +79,8 @@ def run(vit, efficientnet, output, similar_vit=None):
     np.save(output / 'val_predictions.npy', combine(probabilities, selected).argmax(1))
     baselines = [row for row in rows if row['temperature'] == 1
                  and all(row.get(name, 0) in (0, 1) for name in
-                         ('vit_weight', 'efficientnet_weight', 'similar_vit_weight'))]
-    fixed = [row for row in rows if row.get('similar_vit_weight', 0) == 0
+                         ('vit_weight', 'efficientnet_weight', extra_weight))]
+    fixed = [row for row in rows if row.get(extra_weight, 0) == 0
              and (row['temperature'], row['vit_weight']) in ((1, .5), (4, .45))]
     summary = {'selected': selected, 'baselines': baselines, 'fixed_recipes': fixed,
                'best_by_mode': {mode: max((r for r in rows if r['mode'] == mode), key=lambda r: r['correct'])
@@ -85,9 +88,9 @@ def run(vit, efficientnet, output, similar_vit=None):
                'val_examples': len(labels), 'validation_only': True, 'candidates': len(rows),
                'vit': str(vit), 'efficientnet': str(efficientnet), 'sha256': hashes,
                'selection_on_validation': True}
-    if similar_vit is not None:
-        summary['similar_vit'] = str(similar_vit)
-        summary['equal_weights'] = [r for r in rows if r['vit_weight'] == r['efficientnet_weight'] == r['similar_vit_weight']]
+    if extra is not None:
+        summary['convnext' if convnext else 'similar_vit'] = str(extra)
+        summary['equal_weights'] = [r for r in rows if r['vit_weight'] == r['efficientnet_weight'] == r[extra_weight]]
     pd.DataFrame(rows).sort_values('correct', ascending=False).to_csv(output / 'scores.csv', index=False)
     (output / 'summary.json').write_text(json.dumps(summary, indent=2))
     (output / 'source.py').write_text(Path(__file__).read_text())
@@ -99,8 +102,8 @@ def verify(output):
     for path, digest in summary['sha256'].items():
         assert sha256(Path(path)) == digest
     selected = summary['selected']
-    similar_vit = Path(summary['similar_vit']) if 'similar_vit' in summary else None
-    labels, arrays, _ = inputs(Path(summary['vit']), Path(summary['efficientnet']), similar_vit)
+    extra = summary.get('similar_vit') or summary.get('convnext')
+    labels, arrays, _ = inputs(Path(summary['vit']), Path(summary['efficientnet']), Path(extra) if extra else None)
     probabilities = [temper(probs, selected['temperature']) for probs in arrays[selected['mode']]]
     predictions = combine(probabilities, selected).argmax(1)
     differences = int((predictions != np.load(output / 'val_predictions.npy')).sum())
@@ -118,10 +121,11 @@ if __name__ == '__main__':
     parser.add_argument('--vit', default='output/pretrained-vit-95-20261015')
     parser.add_argument('--efficientnet', default='output/efficientnet-b3-resume-20261015')
     parser.add_argument('--similar-vit', type=Path)
+    parser.add_argument('--convnext', type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--verify', action='store_true')
     args = parser.parse_args()
     if args.verify:
         verify(args.output)
     else:
-        run(Path(args.vit), Path(args.efficientnet), args.output, args.similar_vit)
+        run(Path(args.vit), Path(args.efficientnet), args.output, args.similar_vit, args.convnext)
