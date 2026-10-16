@@ -10,6 +10,14 @@ from blend_val import temper
 from split95 import sha256
 
 
+def track(loader, name):
+    for i, batch in enumerate(loader):
+        if i % 256 == 0:
+            print(json.dumps({'model': name, 'test_examples_done': i * loader.batch_size,
+                              'test_examples': len(loader.dataset)}), flush=True)
+        yield batch
+
+
 def run(output):
     from pretrained_vit import make_network, predict, setup
 
@@ -19,26 +27,48 @@ def run(output):
     recipe = summary['selected']
     flip = recipe['mode'] == 'flip'
     arrays, loaders = setup(False, 'input/split95-seed45')
-    paths, hashes, weights_sha = {}, {}, {}
-    for name, key, filename in [('vit', 'vit', 'vit.pth'), ('efficientnet', 'efficientnet', 'model.pth')]:
+    torch.set_num_threads(2)
+    torch.cuda.set_per_process_memory_fraction(.25)
+    for path, digest in summary['sha256'].items():
+        assert sha256(Path(path)) == digest
+    paths, weights_sha = {}, {}
+    hashes = {str(path): sha256(path) for path in
+              (output / 'summary.json', Path('input/test_images.npy'), Path('input/classes.npy'))}
+    models = [('vit', 'vit.pth'), ('efficientnet', 'model.pth')]
+    if 'similar_vit' in summary:
+        models.append(('similar_vit', 'vit.pth'))
+    for name, filename in models:
         if recipe[name + '_weight'] == 0:
             continue
-        folder = Path(summary[key])
+        folder = Path(summary[name])
         config = json.loads((folder / 'config.json').read_text())
         path = output / f'test_{name}.npy'
         assert not path.exists(), 'Вероятности test уже существуют'
         model = make_network(config['model'])
         model.load_state_dict(torch.load(folder / filename, map_location='cpu', weights_only=True))
-        probs = predict(model, loaders['test'], flip)
+        probs = predict(model, track(loaders['test'], name), flip)
         np.save(path, probs)
         paths[name] = str(path)
         weights_sha[str(folder / filename)] = sha256(folder / filename)
         del model, probs
         torch.cuda.empty_cache()
+        print(json.dumps({'model': name, 'test_examples_done': 172500, 'saved': str(path)}), flush=True)
     if recipe['convnext_weight'] > 0:
         folder = Path(summary['convnext'])
-        paths['convnext'] = str(folder / ('test_flip.npy' if flip else 'test_plain.npy'))
+        path = folder / ('test_flip.npy' if flip else 'test_plain.npy')
+        if not path.exists():
+            from convnext import make_model, predict as predict_convnext
+
+            path = output / 'test_convnext.npy'
+            assert not path.exists(), 'Вероятности test уже существуют'
+            model = make_model()
+            model.load_state_dict(torch.load(folder / 'model.pth', map_location='cpu', weights_only=True))
+            np.save(path, predict_convnext(model, arrays['test_images'], 256, flip))
+            del model
+            torch.cuda.empty_cache()
+        paths['convnext'] = str(path)
         weights_sha[str(folder / 'model.pth')] = sha256(folder / 'model.pth')
+        print(json.dumps({'model': 'convnext', 'test_examples_done': 172500, 'saved': str(path)}), flush=True)
     combined = None
     for name, path in paths.items():
         probs = np.load(path, mmap_mode='r')
@@ -53,6 +83,8 @@ def run(output):
                 'model_weights_sha256': weights_sha, 'submission_rows': len(predictions),
                 'val_examples': len(arrays['val_labels']), 'kaggle_submitted': False}
     (output / 'submission_summary.json').write_text(json.dumps(metadata, indent=2))
+    (output / 'submission_source.py').write_text(Path(__file__).read_text())
+    print(json.dumps({'submission_rows': len(predictions), 'saved': str(output / 'submission.csv')}), flush=True)
 
 
 def verify(output):

@@ -531,3 +531,12 @@ GPU-проверка: batch 256 помещается на RTX 4070 Ti, peak allo
 .venv/bin/python blend_four95.py --similar-vit output/vit-similar-tta95-20261016-epoch06-fixed --convnext output/convnext-tta95-20261016-epoch08 --output output/four-models-check
 .venv/bin/python blend_four95.py --output output/four-models-check --verify
 ```
+
+Для этого рецепта готов `output/four-models95-20261016-epoch08/submission.csv`:172500 строк id/label, четыре фиксированных checkpoint, T4 без TTA. `ensemble_submission95.py` последовательно считает test probabilities обоих ViT, EfficientNet и снимка ConvNeXt; отдельный verify проверяет исходные SHA256 и повторяет предсказания CSV. Получено0 различий. CSV и отчёты сохранены на ПК и Mac; SHA256 CSV `01e2c02a5fd81613e505bb7506441ce4b76e54d191412cee520c9d1f91829cf9`. Обучение продолжилось; на Kaggle файл не отправлялся.
+
+```bash
+.venv/bin/python ensemble_submission95.py --output output/four-models95-20261016-epoch08
+.venv/bin/python ensemble_submission95.py --output output/four-models95-20261016-epoch08 --verify
+```
+
+Первая команда предназначена для папки с готовым рецептом и без рассчитанных test-файлов; в готовой папке достаточно второй. Test probabilities и CSV остаются вне Git.
